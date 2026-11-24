@@ -6,16 +6,19 @@ import time
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer
+from PySide6.QtCore import QBuffer, QIODevice, Qt, QTimer, QUrl
 from PySide6.QtGui import (
+    QDesktopServices,
     QDragEnterEvent,
     QDragLeaveEvent,
     QDropEvent,
     QFont,
     QGuiApplication,
+    QHideEvent,
     QImage,
     QKeySequence,
     QShortcut,
+    QTextDocumentFragment,
 )
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -40,23 +43,26 @@ from tvorka.core.advisor import DEFAULT_CTX, NO, Fit, LlmPlan
 from tvorka.core.attachments import Attachment, AttachmentError
 from tvorka.core.catalog import ModelSpec
 from tvorka.core.chats import Conversation, Message
-from tvorka.core.llm import runtime
 from tvorka.gui import handoff, icons, theme
 from tvorka.gui.handoff import Asset, Route
 from tvorka.gui.pages.base import Page
+from tvorka.gui.pages.speech import SpeechPage
 from tvorka.gui.services import Services
 from tvorka.gui.widgets.basic import Card, Field, Segmented, SliderField, label, tool_button
 from tvorka.gui.widgets.chat_attachments import AttachmentChip, ComposerEdit, local_files
+from tvorka.gui.widgets.chat_audio import ChatAudio
 from tvorka.gui.widgets.chat_message import MessageView
 from tvorka.gui.widgets.feedback import ToastHost
 from tvorka.gui.widgets.fit import FitBanner
 from tvorka.gui.widgets.mic import MicButton
 from tvorka.gui.widgets.model_card import chat_download_files, chat_download_gb, size_text
 from tvorka.i18n import messages, tr
-from tvorka.workers.chat import Launch
 from tvorka.workers.downloads import run_async
 
 MEMORY_OPTIONS = (0, 4096, 8192, 16384, 32768)
+# Proposals of the model -> the section that makes them, and how it takes the text.
+TOOL_ROUTES = {"generate_image": ("image", "prompt"), "generate_video": ("video", "prompt"),
+               "speak": ("speech", "text")}
 
 
 def role_names() -> dict[str, str]:
@@ -84,6 +90,7 @@ class ChatPage(Page):
         self._live: MessageView | None = None
         self._chips: list[AttachmentChip] = []
         self._reading = 0  # files still being read
+        self._audio_chat = ""
         self.setAcceptDrops(True)
 
         layout = QHBoxLayout(self)
@@ -103,6 +110,9 @@ class ChatPage(Page):
         for signal in (downloads.progress, downloads.cancelled, downloads.finished):
             signal.connect(lambda *_args: self._update_action())
         services.downloads.failed.connect(self._on_download_failed)
+        services.worker.job_finished.connect(self._on_job_finished)  # works the model proposed
+        services.worker.job_failed.connect(self._on_speech_failed)
+        services.worker.job_cancelled.connect(self._finish_chat_speech)
         self._fill_models()
         self._restore()
 
@@ -192,6 +202,9 @@ class ChatPage(Page):
         self.context_note = label("", "faint", wrap=True)
         self.context_note.setVisible(False)
         column.addWidget(self.context_note)
+        self.audio = ChatAudio()
+        self.audio.failed.connect(self._on_audio_failed)
+        column.addWidget(self.audio)
         column.addWidget(self._build_composer())
         return main
 
@@ -221,6 +234,11 @@ class ChatPage(Page):
                                     "times longer. The reasoning is shown folded above the answer."))
         self.thinking.toggled.connect(self._params_changed)
         self.params.body.addWidget(self.thinking)
+        self.tools = QCheckBox(tr("The model may suggest creating a picture, a video clip or a voice-over"))
+        self.tools.setToolTip(tr("It shows a card under its answer; nothing is created until you press "
+                                 "“Create”."))
+        self.tools.toggled.connect(self._params_changed)
+        self.params.body.addWidget(self.tools)
         self.instruction = QPlainTextEdit()
         self.instruction.setPlaceholderText(tr("Your own instruction for this chat, instead of the role. "
                                                "For example: answer briefly, as a film critic."))
@@ -374,7 +392,8 @@ class ChatPage(Page):
             conv.model = ""  # the model was removed: keep the one selected
         self._spec = self.services.catalog.get(self.model_box.currentData() or "")
         conv.model = conv.model or (self._spec.id if self._spec else "")
-        fields = (self.temperature, self.auto_temperature, self.memory, self.thinking, self.instruction)
+        fields = (self.temperature, self.auto_temperature, self.memory, self.thinking, self.tools,
+                  self.instruction)
         for widget in fields:
             widget.blockSignals(True)
         self.auto_temperature.setChecked(conv.temperature is None)
@@ -382,6 +401,7 @@ class ChatPage(Page):
         self.temperature.setEnabled(conv.temperature is not None)
         self.memory.set_value(str(conv.ctx if conv.ctx in MEMORY_OPTIONS else 0))
         self.thinking.setChecked(conv.thinking)
+        self.tools.setChecked(conv.tools)
         self.instruction.setPlainText(conv.system)
         for widget in fields:
             widget.blockSignals(False)
@@ -419,6 +439,8 @@ class ChatPage(Page):
 
     # ============================================================ messages
     def _render(self) -> None:
+        if self._audio_chat != self._conv.id:
+            self.audio.clear()
         for view in [*self._views, *([self._live] if self._live is not None else [])]:
             self.thread.removeWidget(view)
             view.hide()  # deleteLater waits for the event loop; the old chat must vanish now
@@ -432,6 +454,8 @@ class ChatPage(Page):
             view = MessageView(message, index, model.name if model else message.model, index == last,
                                folder=self._folder())
             view.action.connect(self._message_action)
+            view.draw_variant.connect(self._draw_variant)
+            view.tool.connect(self._tool_action)
             self.thread.insertWidget(self.thread.count() - 1, view)
             self._views.append(view)
         if self.session.answering == conv.id and self.session.partial is not None:
@@ -489,12 +513,21 @@ class ChatPage(Page):
                                      count=dropped))
         self.context_note.setVisible(dropped > 0)
 
+    def _answer_asset(self, text: str) -> Asset:
+        return handoff.text(text, self.key, parent=f"chat:{self._conv.id}")
+
+    def _draw_variant(self, text: str) -> None:
+        self.send(self._answer_asset(text), "image", "prompt")
+
     def _message_action(self, name: str, index: int) -> None:
         conv = self._conv
         if not 0 <= index < len(conv.messages):
             return
         if name == "send":
-            self.send_menu(handoff.text(conv.messages[index].content, "chat", parent=f"chat:{conv.id}"))
+            selection = self._views[index].body.selectedText().replace("\u2029", "\n").replace("\u2028", "\n")
+            self.send_menu(self._answer_asset(selection.strip() or conv.messages[index].content))
+        elif name == "read":
+            self._read_answer(index)
         elif name == "copy":
             QGuiApplication.clipboard().setText(conv.messages[index].content)
             if self.toasts is not None:
@@ -559,6 +592,7 @@ class ChatPage(Page):
         self.temperature.setEnabled(not auto)
         conv.temperature = None if auto else self.temperature.value()
         conv.thinking = self.thinking.isChecked()
+        conv.tools = self.tools.isChecked()
         conv.ctx = int(self.memory.value() or 0)
         conv.system = self.instruction.toPlainText()
         self._save_settings_of_chat()
@@ -576,6 +610,7 @@ class ChatPage(Page):
 
     def _refresh_fit(self) -> None:
         self.thinking.setVisible(self._reasoning())
+        self.tools.setVisible(self._can_use_tools())
         self.fit_banner.set_fit(self._fit())
         self._mark_context()
         self._update_action()
@@ -687,22 +722,14 @@ class ChatPage(Page):
         conv, spec, fit = self._conv, self._spec, self._fit()
         if spec is None or fit is None or not isinstance(fit.plan, LlmPlan) or not conv.messages:
             return
-        launch = self._launch(spec, fit.plan, fit.need_vram_gb)
+        launch = self.services.chat_launch(spec, ctx=conv.ctx)
         if launch is None:
             if self.toasts is not None:
                 self.toasts.show(messages.engine_error("not_installed"), "bad")
             return
-        self.session.send(conv, launch, fit.plan.ctx, self._reasoning())
+        self.session.send(conv, launch, fit.plan.ctx, self._reasoning(), conv.tools and self._can_use_tools())
         self._remember()
         self._render()
-
-    def _launch(self, spec: ModelSpec, plan: LlmPlan, vram_gb: float = 0.0) -> Launch | None:
-        engine = self.services.chat_runtime()
-        exe = runtime.server_path(self.services.store, engine) if engine is not None else None
-        model, projector = self.services.store.chat_files(spec)
-        if exe is None or model is None:
-            return None
-        return Launch(spec.id, exe, model, plan, projector, self.services.store.chat_mtp(spec), vram_gb)
 
     def cancel(self) -> None:
         if self.session.answering == self._conv.id:
@@ -738,17 +765,170 @@ class ChatPage(Page):
         self.counter.setText(tr("~{used} / {total} tokens", used=f"{used:,}".replace(",", " "),
                                 total=f"{self._ctx(self._fit()):,}".replace(",", " ")))
 
+    # ============================================================ works the model proposes
+    def _can_use_tools(self) -> bool:
+        return self._spec is not None and "tools" in self._spec.capabilities
+
+    def _read_answer(self, index: int) -> None:
+        message = self._conv.messages[index]
+        text = QTextDocumentFragment.fromHtml(self._views[index].body.text()).toPlainText().strip()
+        if message.role != "assistant" or not text:
+            return
+        for number, tool in enumerate(message.tools):
+            if tool.get("answer_audio"):
+                paths = tool.get("paths", [])
+                if paths and Path(paths[0]).is_file():
+                    self._play_audio(paths[0])
+                elif tool["status"] != "running":
+                    self._tool_action("create", index, number)
+                return
+        message.tools.append({"name": "speak", "value": text, "status": "proposed",
+                              "answer_audio": True, "paths": []})
+        self._tool_action("create", index, len(message.tools) - 1)
+
+    def _play_audio(self, path: str) -> None:
+        self._audio_chat = self._conv.id
+        self.audio.play(path)
+
+    def _on_audio_failed(self, detail: str) -> None:
+        if self.toasts is not None:
+            self.toasts.show(tr("Could not play the audio.") + (" " + detail if detail else ""), "warn")
+
+    def hideEvent(self, event: QHideEvent) -> None:
+        self.audio.clear()
+        super().hideEvent(event)
+
+    def _tool_action(self, action: str, message: int, number: int) -> None:
+        """A button on a card under an answer. Nothing is created without "Create"."""
+        conv = self._conv
+        if not 0 <= message < len(conv.messages) or not 0 <= number < len(conv.messages[message].tools):
+            return
+        tool = conv.messages[message].tools[number]
+        if action == "create" and tool["status"] == "running":
+            return
+        page_key, role = TOOL_ROUTES.get(tool["name"], ("", ""))
+        window = self.window()
+        target = window.page(page_key) if hasattr(window, "page") else None
+        asset = handoff.text(tool["value"], "chat", parent=f"chat:{conv.id}:{message}:{number}")
+        if action == "play" and tool.get("paths"):
+            self._play_audio(tool["paths"][0])
+            return
+        if action == "cancel":
+            for job_id, (_, pending) in self.services.chat_speech_jobs.items():
+                if pending is tool:
+                    self.services.worker.cancel(job_id)
+                    break
+            return
+        if action == "create" and isinstance(target, SpeechPage):
+            job = target.chat_job(tool["value"], asset.parent)
+            if job is None:
+                window.send(asset, Route(page_key, role, ""))
+                tool["status"] = "sent"
+            else:
+                tool.update(status="running", paths=[], chat_speech=True)
+                self.services.chat_speech_jobs[job.id] = (conv.id, tool)
+                self.services.worker.submit(job)
+        elif action == "create" and target is not None:
+            target.receive(asset, role)
+            queued = len(getattr(target, "_jobs", ()))
+            target.generate()  # with that section's model and settings
+            if len(getattr(target, "_jobs", ())) > queued or getattr(target, "_translating", False):
+                tool["status"] = "running"
+            else:  # the model there is not downloaded, or something is missing: let the user see
+                window.send(asset, Route(page_key, role, ""))
+                tool["status"] = "sent"
+        elif action == "edit" and target is not None:
+            window.send(asset, Route(page_key, role, ""))
+            tool["status"] = "sent"
+        elif action == "decline":
+            tool["status"] = "declined"
+        elif action == "show" and target is not None:
+            window.open_page(window.pages.index(target))
+            return
+        elif action in ("open", "send") and tool.get("paths"):
+            path = tool["paths"][0]
+            if action == "open":
+                QDesktopServices.openUrl(QUrl.fromLocalFile(path))
+            else:
+                found = handoff.from_path(path, "chat")
+                if found is not None:
+                    self.send_menu(found)
+            return
+        self.session.store.save(conv)
+        self._render()
+
+    def _on_speech_failed(self, job_id: int, code: str, detail: str) -> None:
+        if self._finish_chat_speech(job_id) and self.toasts is not None:
+            self.toasts.show(messages.engine_error(code, detail), "bad")
+
+    def _finish_chat_speech(self, job_id: int, paths: list[str] | None = None) -> bool:
+        request = self.services.chat_speech_jobs.pop(job_id, None)
+        if request is None:
+            return False
+        conv_id, tool = request
+        conv = self.session.get(conv_id)
+        if conv is None or not any(card is tool for message in conv.messages for card in message.tools):
+            return True  # the answer was replaced while the job was running
+        tool.update(status="done" if paths else "failed", paths=paths or [])
+        self.session.store.save(conv)
+        if conv_id == self._conv.id:
+            self._render()
+            if paths and tool.get("answer_audio") and self.isVisible():
+                self._play_audio(paths[0])
+        return True
+
+    def _on_job_finished(self, job_id: int, results: list) -> None:
+        """A work the model proposed is ready: it appears on its card."""
+        if self._finish_chat_speech(job_id, [result["path"] for result in results if result.get("path")]):
+            return
+        changed = set()
+        for result in results:
+            parts = str(result.get("params", {}).get("parent", "")).split(":")
+            if len(parts) != 4 or parts[0] != "chat":
+                continue
+            conv = self.session.get(parts[1])
+            try:
+                tool = conv.messages[int(parts[2])].tools[int(parts[3])] if conv else None
+            except (IndexError, ValueError):
+                tool = None
+            if tool is not None:
+                tool["status"] = "done"
+                tool.setdefault("paths", []).append(result.get("path", ""))
+                changed.add(conv.id)
+        for conv_id in changed:
+            conv = self.session.get(conv_id)
+            if conv is not None:
+                self.session.store.save(conv)
+            if conv_id == self._conv.id:
+                self._render()
+
     # ============================================================ handoff (gui/handoff.py)
     def routes(self, asset: Asset) -> list[Route]:
-        if asset.kind in ("image", "video", "audio") and asset.path:
+        if asset.kind == "video" and asset.path:
+            return [
+                Route("chat", "attachment", tr("Ask about it in the chat")),
+                Route("chat", "describe_video", tr("Describe the video")),
+                Route("chat", "narrate_video", tr("Write narration for the video")),
+            ]
+        if asset.kind in ("image", "audio") and asset.path:
             return [Route("chat", "attachment", tr("Ask about it in the chat"))]
         if asset.kind == "text" and asset.text.strip() and asset.source != "chat":
             return [Route("chat", "text", tr("Discuss in the chat"))]
         return []
 
     def receive(self, asset: Asset, role: str) -> None:
-        if role == "attachment":
-            self.add_files([Path(asset.path)])
+        instructions = {
+            "describe_video": tr("Describe what happens in the attached video in chronological order. "
+                                 "Reply with text only and do not call tools."),
+            "narrate_video": tr("Write a short narration script for the attached video, "
+                                "following the action. Reply with the script only and do not call tools."),
+        }
+        if role == "attachment" or role in instructions:
+            self.add_files([Path(asset.path)], text_only=role in instructions)
+            if role in instructions:
+                draft = self.text.toPlainText()
+                instruction = instructions[role]
+                self.text.setPlainText(f"{draft}\n\n{instruction}" if draft.strip() else instruction)
         elif role == "text":
             self.text.setPlainText(asset.text.strip())
         self.text.setFocus()
@@ -771,10 +951,11 @@ class ChatPage(Page):
         files, _ = QFileDialog.getOpenFileNames(self, tr("Attach files"))
         self.add_files([Path(f) for f in files])
 
-    def add_files(self, files: list[Path]) -> None:
+    def add_files(self, files: list[Path], *, text_only: bool = False) -> None:
         folder = self._folder()
         for file in files:
-            self._read(file.name, lambda f=file: attachments.prepare(f, folder, self._transcribe))
+            self._read(file.name, lambda f=file: attachments.prepare(f, folder, self._transcribe),
+                       text_only=text_only)
 
     def _transcribe(self, audio: Path) -> str | None:
         """Speech in an attachment, in the reading thread; None when no recognition model is installed."""
@@ -797,7 +978,7 @@ class ChatPage(Page):
 
         self._read(name, prepare)
 
-    def _read(self, name: str, prepare: Callable[[], Attachment]) -> None:
+    def _read(self, name: str, prepare: Callable[[], Attachment], *, text_only: bool = False) -> None:
         """Read a file in the background; its chip shows progress, then what the model gets."""
         conv_id = self._conv.id
         chip = AttachmentChip(name)
@@ -808,6 +989,7 @@ class ChatPage(Page):
 
         def done(item: Attachment) -> None:
             self._reading -= 1
+            item.text_only = text_only
             self.session.pending.setdefault(conv_id, []).append(item)
             if conv_id == self._conv.id and chip in self._chips:
                 chip.set_item(item, self._folder())

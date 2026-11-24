@@ -54,6 +54,7 @@ class Attachment:
     text: str = ""  # what the model reads (text, code, documents)
     tokens: int = 0  # about how much of the model's memory it takes
     truncated: bool = False  # the text was too long and was cut
+    text_only: bool = False  # the attachment was sent for a written answer
 
     @property
     def images(self) -> list[str]:
@@ -239,6 +240,20 @@ def _unique(folder: Path, name: str) -> Path:
         target = folder / f"{stem}-{n}{suffix}"
         n += 1
     return target
+
+
+def data_url(path: Path, side: int = MAX_SIDE) -> str:
+    """A picture as a JPEG data URL, scaled down: how a vision model is shown a file."""
+    import io
+
+    from PIL import Image
+
+    with Image.open(path) as image:
+        picture = image.convert("RGB")
+        picture.thumbnail((side, side))
+        buffer = io.BytesIO()
+        picture.save(buffer, "JPEG", quality=90)
+    return "data:image/jpeg;base64," + base64.b64encode(buffer.getvalue()).decode("ascii")
 
 
 def message_content(text: str, attachments: list[Attachment], folder: Path,

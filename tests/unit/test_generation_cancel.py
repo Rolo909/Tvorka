@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -12,6 +13,7 @@ from tvorka.core.catalog import Catalog
 from tvorka.core.jobs import History, Job
 from tvorka.core.settings import Settings
 from tvorka.core.store import ModelStore
+from tvorka.workers import generation
 from tvorka.workers.generation import GenerationWorker
 
 
@@ -42,3 +44,16 @@ def test_cancel_one(worker: GenerationWorker) -> None:
     assert worker._is_cancelled(b.id)
     worker.cancel(12345)  # unknown id: ignored
     assert 12345 not in worker._cancel
+
+
+def test_cancellation_at_the_end_of_load_releases_the_engine(worker: GenerationWorker, monkeypatch) -> None:
+    job = Job("image", "stabilityai/sd-turbo", "A lighthouse")
+    worker.submit(job)
+    unloaded = []
+    engine = SimpleNamespace(load=lambda _ctx: worker.cancel(job.id), unload=lambda: unloaded.append(True))
+    monkeypatch.setattr(generation, "create_engine", lambda _spec, _plan: engine)
+    cancelled = []
+    worker.job_cancelled.connect(cancelled.append)
+    worker._run_job(job)
+    assert unloaded == [True] and cancelled == [job.id]
+    assert not worker.loaded_model

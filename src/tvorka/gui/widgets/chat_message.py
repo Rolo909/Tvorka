@@ -5,12 +5,21 @@ from __future__ import annotations
 from pathlib import Path
 
 from PySide6.QtCore import Qt, Signal
-from PySide6.QtGui import QFontMetrics, QResizeEvent, QTextCharFormat, QTextCursor, QTextDocument, QTextFormat
-from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QVBoxLayout, QWidget
+from PySide6.QtGui import (
+    QFontMetrics,
+    QResizeEvent,
+    QTextCharFormat,
+    QTextCursor,
+    QTextDocument,
+    QTextFormat,
+    QTextListFormat,
+)
+from PySide6.QtWidgets import QFrame, QHBoxLayout, QLabel, QPushButton, QVBoxLayout, QWidget
 
 from tvorka.core.chats import Message
-from tvorka.gui import theme
+from tvorka.gui import icons, theme
 from tvorka.gui.widgets.basic import Disclosure, label, tool_button
+from tvorka.gui.widgets.canvas import load_scaled
 from tvorka.gui.widgets.chat_attachments import AttachmentChip
 from tvorka.i18n import tr
 
@@ -54,10 +63,35 @@ def _text(role: str) -> QLabel:
     return widget
 
 
+def _numbered_items(text: str) -> list[str]:
+    """Text of top-level Markdown ordered lists with multiple items."""
+    document = QTextDocument()
+    document.setMarkdown(text)
+    items: list[list[str]] = []
+    current: list[str] | None = None
+    block = document.begin()
+    while block.isValid():
+        text_list = block.textList()
+        if text_list is not None and text_list.format().indent() == 1:
+            current = None
+            if text_list.format().style() == QTextListFormat.Style.ListDecimal and text_list.count() > 1:
+                current = []
+                items.append(current)
+        elif text_list is None and block.blockFormat().indent() == 0:
+            current = None
+        text = block.text().strip()
+        if current is not None and text:
+            current.append(text)
+        block = block.next()
+    return ["\n".join(item) for item in items if item]
+
+
 class MessageView(QWidget):
     """``action`` carries ``copy``, ``edit`` or ``regenerate`` for the message at ``index``."""
 
     action = Signal(str, int)
+    draw_variant = Signal(str)
+    tool = Signal(str, int, int)  # create | edit | decline | show | open | send, message index, tool index
 
     def __init__(self, message: Message, index: int, model_name: str = "", last: bool = False,
                  live: bool = False, folder: Path | None = None) -> None:
@@ -87,6 +121,10 @@ class MessageView(QWidget):
         box.addWidget(self.reasoning)
         self.body = _text(message.role)
         box.addWidget(self.body)
+        if message.role == "assistant" and not live:
+            items = _numbered_items(message.content)
+            if items:
+                box.addWidget(self._variants(items))
         if message.attachments:  # the files that went with the message
             files = QHBoxLayout()
             files.setSpacing(6)
@@ -99,6 +137,8 @@ class MessageView(QWidget):
             box.addLayout(files)
         self.note = label("", "faint", wrap=True)
         box.addWidget(self.note)
+        for number, tool in enumerate(message.tools):  # what the model proposes to create
+            box.addWidget(ToolCard(self, number, tool))
 
         row = QHBoxLayout()
         row.setContentsMargins(0, 0, 0, 0)
@@ -111,6 +151,8 @@ class MessageView(QWidget):
             buttons.append(("edit", "edit", tr("Edit and send again")))
         else:
             buttons.append(("send", "link", tr("Send to… (draw it, make a video, read aloud)")))
+            if message.content.strip() and not live:
+                buttons.append(("read", "voice", tr("Read answer aloud")))
             if last:
                 buttons.append(("regenerate", "refresh", tr("Answer again")))
         self.buttons = []
@@ -127,6 +169,20 @@ class MessageView(QWidget):
         box.addWidget(self.actions)
         self.model_name = model_name
         self.update_from(message, live)
+
+    def _variants(self, items: list[str]) -> Disclosure:
+        panel = Disclosure(tr("Prompt variants"))
+        for text in items:
+            row = QHBoxLayout()
+            prompt = label(text, "", wrap=True)
+            prompt.setTextFormat(Qt.TextFormat.PlainText)
+            row.addWidget(prompt, 1)
+            draw = QPushButton(tr("Draw this"))
+            draw.setProperty("role", "ghost")
+            draw.clicked.connect(lambda _checked=False, variant=text: self.draw_variant.emit(variant))
+            row.addWidget(draw)
+            panel.body.addLayout(row)
+        return panel
 
     def resizeEvent(self, event: QResizeEvent) -> None:
         """A user's message is as wide as its text, at most three quarters of the conversation."""
@@ -167,3 +223,73 @@ class MessageView(QWidget):
         self.body.style().polish(self.body)
         self.setToolTip(tr("The model no longer sees this message: the conversation is longer than "
                            "its memory.") if out else "")
+
+
+TOOL_TITLES = {"generate_image": "image", "generate_video": "video", "speak": "voice"}
+
+
+class ToolCard(QFrame):
+    """What the model proposes to create; nothing runs until the user presses "Create"."""
+
+    def __init__(self, view: MessageView, index: int, tool: dict) -> None:
+        super().__init__()
+        self.setObjectName("Banner")
+        name, status = tool.get("name", ""), tool.get("status", "")
+        box = QVBoxLayout(self)
+        box.setContentsMargins(12, 10, 12, 10)
+        box.setSpacing(6)
+        titles = {"generate_image": tr("The model suggests creating a picture"),
+                  "generate_video": tr("The model suggests creating a video clip"),
+                  "speak": tr("The model suggests reading this aloud")}
+        head = QHBoxLayout()
+        icon = QLabel()
+        icon.setPixmap(icons.pixmap(TOOL_TITLES.get(name, "chat"), 16, "accent_text"))
+        head.addWidget(icon)
+        title = tr("Answer audio") if tool.get("answer_audio") else titles.get(name, name)
+        head.addWidget(label(title, "heading"), 1)
+        box.addLayout(head)
+        if not tool.get("answer_audio"):
+            value = label(tool.get("value", ""), "", wrap=True)
+            value.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            box.addWidget(value)
+        row = QHBoxLayout()
+        row.setSpacing(6)
+
+        def button(text: str, action: str, role: str = "ghost") -> None:
+            widget = QPushButton(text)
+            widget.setProperty("role", role)
+            widget.setCursor(Qt.CursorShape.PointingHandCursor)
+            widget.clicked.connect(lambda: view.tool.emit(action, view.index, index))
+            row.addWidget(widget)
+
+        paths = [p for p in tool.get("paths", []) if p]
+        if status == "proposed":
+            button(tr("Create"), "create", "accent")
+            button(tr("Edit first"), "edit")
+            button(tr("Cancel"), "decline")
+        elif status == "running":
+            row.addWidget(label(tr("Being created…"), "muted"))
+            if tool.get("chat_speech"):
+                button(tr("Cancel"), "cancel")
+            else:
+                button(tr("Open the section"), "show")
+        elif status == "done" and paths:
+            if name == "generate_image":
+                preview = QLabel()
+                preview.setPixmap(load_scaled(paths[0], 280))
+                box.addWidget(preview)
+            else:
+                box.addWidget(label(Path(paths[0]).name, "mono"))
+            if name == "speak":
+                button(tr("Play"), "play")
+            button(tr("Open"), "open")
+            button(tr("Send to…"), "send")
+        elif status == "failed" and name == "speak":
+            row.addWidget(label(tr("Speech synthesis did not finish."), "warn"))
+            button(tr("Create"), "create")
+        else:
+            notes = {"declined": tr("Cancelled."), "sent": tr("Handed over to the section to edit."),
+                     "invalid": tr("The model made a broken request. Ask again in other words.")}
+            row.addWidget(label(notes.get(status, ""), "faint"))
+        row.addStretch(1)
+        box.addLayout(row)

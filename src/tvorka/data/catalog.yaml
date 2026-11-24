@@ -581,7 +581,7 @@ models:
     kind: transcribe
     engine: whisper
     author: OpenAI
-    license: MIT
+    license: Apache-2.0
     summary:
       ru: Распознаёт речь на 99 языках, в том числе русскую. Быстро работает на процессоре — видеокарта остаётся свободной.
       en: Recognizes speech in 99 languages. Runs fast on the processor, leaving the graphics card free.
@@ -608,7 +608,7 @@ models:
     kind: transcribe
     engine: whisper
     author: OpenAI
-    license: MIT
+    license: Apache-2.0
     summary:
       ru: Самая лёгкая. Подойдёт для коротких чётких фраз на слабом компьютере.
       en: The lightest. Fine for short clear phrases on a modest computer.

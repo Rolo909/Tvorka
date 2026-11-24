@@ -60,13 +60,22 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         pieces: list[dict[str, str]] = [{"reasoning_content": "Thinking"}]
         pieces += [{"content": w} for w in ("Hello", ", ", "world")]
-        delay = 0.0
+        delay, finish = 0.0, "stop"
         if prompt == "slow":
             pieces, delay = [{"content": "x"}] * 2000, 0.01
+        if body.get("tools") and isinstance(prompt, str) and prompt.startswith("draw"):
+            # A tool call streamed the way llama-server does it: the name first, the arguments in pieces.
+            arguments = '{"prompt": "a lighthouse at dusk"}' if prompt == "draw" else '{"prompt": '
+            pieces = [{"content": "Sure!"},
+                      {"tool_calls": [{"index": 0, "id": "c1", "type": "function",
+                                       "function": {"name": "generate_image", "arguments": ""}}]}]
+            pieces += [{"tool_calls": [{"index": 0, "function": {"arguments": arguments[i:i + 7]}}]}
+                       for i in range(0, len(arguments), 7)]
+            finish = "tool_calls"
         for piece in pieces:
             self._event({"choices": [{"index": 0, "delta": piece, "finish_reason": None}]})
             time.sleep(delay)
-        self._event({"choices": [{"index": 0, "delta": {}, "finish_reason": "stop"}],
+        self._event({"choices": [{"index": 0, "delta": {}, "finish_reason": finish}],
                      "timings": {"predicted_per_second": 42.0}})
         self._event({"choices": [], "usage": {"prompt_tokens": 5, "completion_tokens": 3}})
         self._chunk(b"data: [DONE]\n\n")

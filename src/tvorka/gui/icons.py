@@ -76,6 +76,11 @@ def _attach() -> QPainterPath:  # paper clip, drawn upright and tilted
     return QTransform().translate(10, 10).rotate(40).translate(-10, -10).map(path)
 
 
+def _spark() -> QPainterPath:  # four-pointed star and a small one: "make it better"
+    big = _p((9, 3), (10.4, 8.6), (16, 10), (10.4, 11.4), (9, 17), (7.6, 11.4), (2, 10), (7.6, 8.6), (9, 3))
+    return _join(big, _p((15.5, 2.5), (15.5, 6.5)), _p((13.5, 4.5), (17.5, 4.5)))
+
+
 def _mic() -> QPainterPath:  # microphone
     cup = QPainterPath(QPointF(5, 9.5))
     cup.arcTo(QRectF(5, 5, 10, 9.5), 180, 180)
@@ -191,7 +196,7 @@ GLYPHS: dict[str, Callable[[], QPainterPath]] = {
     "check": _check, "close": _close, "play": _play, "pause": _pause, "stop": _stop, "copy": _copy,
     "refresh": _refresh, "plus": _plus, "search": _search, "dice": _dice, "link": _link,
     "warning": _warning, "info": _info, "chevron": _chevron, "upscale": _upscale, "lock": _lock,
-    "edit": _edit, "attach": _attach, "mic": _mic,
+    "edit": _edit, "attach": _attach, "mic": _mic, "spark": _spark,
 }
 
 

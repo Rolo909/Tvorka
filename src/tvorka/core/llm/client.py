@@ -34,6 +34,7 @@ class Delta:
     reasoning: str = ""
     finish: str = ""
     usage: dict[str, Any] = field(default_factory=dict)
+    tool_calls: list[dict[str, Any]] = field(default_factory=list)  # fragments: index, name, arguments
 
 
 class LlamaClient:
@@ -127,8 +128,30 @@ def _delta(chunk: dict[str, Any]) -> Delta | None:
         return Delta(usage=usage) if usage else None
     choice = choices[0]
     delta = choice.get("delta") or {}
+    calls = []
+    for call in delta.get("tool_calls") or []:
+        function = call.get("function") or {}
+        calls.append({"index": int(call.get("index", 0)), "name": str(function.get("name") or ""),
+                      "arguments": str(function.get("arguments") or "")})
     return Delta(str(delta.get("content") or ""), str(delta.get("reasoning_content") or ""),
-                 str(choice.get("finish_reason") or ""), usage)
+                 str(choice.get("finish_reason") or ""), usage, calls)
+
+
+def join_tool_calls(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Streamed tool call pieces glued into ``[{"name", "arguments": dict | None}]`` (None: not JSON)."""
+    calls: dict[int, dict[str, str]] = {}
+    for piece in fragments:
+        call = calls.setdefault(piece["index"], {"name": "", "arguments": ""})
+        call["name"] += piece["name"]
+        call["arguments"] += piece["arguments"]
+    out = []
+    for _index, call in sorted(calls.items()):
+        try:
+            arguments = json.loads(call["arguments"] or "{}")
+        except ValueError:
+            arguments = None
+        out.append({"name": call["name"], "arguments": arguments if isinstance(arguments, dict) else None})
+    return out
 
 
 def _http_error(status: int, body: bytes) -> LlmError:

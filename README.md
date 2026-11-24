@@ -31,6 +31,8 @@ Tvorka запускает открытые ИИ-модели у вас на ко
 - **Видео**: короткие ролики по описанию или «оживление» картинки (CogVideoX, Wan, LTX-Video).
 - **Озвучка**: естественная речь из текста на русском и английском (Silero, MMS, Bark). Числа, даты и
   сокращения читаются словами.
+- **Локальный чат** с моделями GGUF, вложениями и диктовкой через Whisper. Из ответа можно передать
+  промпт на генерацию изображения или видео и озвучить текст прямо в чате.
 - **Подбор под ваш компьютер.** Tvorka заранее говорит, как модель пойдёт на вашей видеокарте
   («отлично», «медленно», «не хватит памяти»), и сам выбирает режим: целиком в видеопамяти, с выгрузкой
   в оперативную память или по частям. Модели, которые больше видеопамяти, всё равно запускаются.
@@ -128,8 +130,16 @@ SnapReel — не удаляйте её. Ярлыки SnapReel заменятс�
 или «Настроить Tvorka для …» для AMD и Intel.
 
 **Хочу свою модель.** «Модели → Добавить свою»: поиск по Hugging Face или свой файл `.safetensors` / папка
-diffusers. LoRA добавляются так же. Для моделей, которые встроенные движки не умеют запускать, есть
+diffusers. Файлы LoRA выбираются на странице «Изображение» в разделе «Дополнительно». Для моделей,
+которые встроенные движки не умеют запускать, есть
 [плагины](docs/PLUGINS.md).
+
+Для первого запуска одиночного чекпойнта без сети положите рядом папку конфигурации Diffusers с тем же
+именем без расширения. Например, рядом с `dreamshaper.safetensors` нужна папка `dreamshaper`,
+в которой есть `model_index.json`, токенизатор и конфигурации компонентов.
+
+**Хочу добавить Whisper для диктовки.** В разделе «Модели» выберите «Распознавание речи». Можно найти модель
+на Hugging Face, ввести адрес репозитория вручную или выбрать локальную папку с моделью Whisper для Transformers.
 
 **Нужен ли интернет для работы?** Нет — только для загрузки моделей и проверки обновлений.
 Единственное исключение — необязательный онлайн-голос Edge TTS.
@@ -161,9 +171,15 @@ uv run ruff check src tests
 ### Лицензии
 
 Код Tvorka распространяется по лицензии [MIT](LICENSE). **На модели она не распространяется**: у каждой
-модели своя лицензия, она показана в каталоге. Некоторые разрешают только некоммерческое использование —
-например Silero (CC BY-NC-SA 4.0), MMS (CC BY-NC 4.0) и SD Turbo / SDXL Turbo (Stability AI Community).
-Перед коммерческим использованием результата проверьте лицензию модели. Real-ESRGAN — BSD-3-Clause.
+модели своя лицензия, она показана в каталоге. У Silero (CC BY-NC-SA 4.0) и MMS (CC BY-NC 4.0) есть
+некоммерческое ограничение. Условия коммерческого использования SD Turbo и SDXL Turbo опубликованы их
+автором. [Silero](https://github.com/snakers4/silero-models/blob/master/LICENSE) ·
+[MMS](https://huggingface.co/facebook/mms-tts-rus#license) ·
+[SD Turbo](https://huggingface.co/stabilityai/sd-turbo#direct-use) ·
+[SDXL Turbo](https://huggingface.co/stabilityai/sdxl-turbo#direct-use)
+
+Для увеличения изображений используются архитектура RRDBNet и веса Real-ESRGAN x4plus от Xintao Wang.
+[Real-ESRGAN, BSD-3-Clause](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)
 
 ### Автор
 
@@ -183,6 +199,8 @@ and the models: your ideas, texts and results never leave your machine. No subsc
 - **Video**: short clips from a description, or bring a picture to life (CogVideoX, Wan, LTX-Video).
 - **Voice-over**: natural speech from Russian and English text (Silero, MMS, Bark). Numbers, dates and
   abbreviations are read as words.
+- **Local chat** with GGUF models, attachments, and Whisper dictation. Send a prompt from an answer to
+  image or video generation, or listen to the answer in the chat.
 - **Fitted to your computer.** Tvorka tells you up front how a model will run on your graphics card
   ("great", "slow", "not enough memory") and picks the mode by itself: fully in video memory, offloaded to
   RAM, or streamed piece by piece. Models larger than your video memory still run.
@@ -253,7 +271,15 @@ and press the button in Settings → This computer: "Install the GPU version of 
 "Set up Tvorka for …" for AMD and Intel.
 
 **I want my own model.** Models → Add your own: search Hugging Face or pick a `.safetensors` file / diffusers folder.
-LoRAs are added the same way. For models the built-in engines can't run there are [plugins](docs/PLUGINS.md).
+Choose LoRA files under Advanced on the Image page. For models the built-in engines can't run there are
+[plugins](docs/PLUGINS.md).
+
+To run a single-file checkpoint offline on first use, place a Diffusers configuration folder next to it with
+the same base name. For example, `dreamshaper.safetensors` uses a nearby `dreamshaper` folder containing
+`model_index.json`, the tokenizer, and component configurations.
+
+**I want to add Whisper for dictation.** In Models, choose Speech recognition. Search Hugging Face, enter a
+repository address manually, or select a local folder with a Transformers Whisper model.
 
 **Does it need the internet to work?** No — only to download models and check for updates.
 The one exception is the optional online Edge TTS voice.
@@ -279,9 +305,15 @@ Layout: UI (`gui`) → background jobs (`workers`) → model engines (`engines`)
 ### Licenses
 
 Tvorka's code is [MIT](LICENSE)-licensed. **That does not cover the models**: each model has its own license,
-shown in the catalog. Some allow non-commercial use only — e.g. Silero (CC BY-NC-SA 4.0), MMS (CC BY-NC 4.0)
-and SD Turbo / SDXL Turbo (Stability AI Community). Check the model's license before using results commercially.
-Real-ESRGAN is BSD-3-Clause.
+shown in the catalog. Silero (CC BY-NC-SA 4.0) and MMS (CC BY-NC 4.0) have non-commercial restrictions.
+Stability AI publishes commercial terms for SD Turbo and SDXL Turbo.
+[Silero](https://github.com/snakers4/silero-models/blob/master/LICENSE) ·
+[MMS](https://huggingface.co/facebook/mms-tts-rus#license) ·
+[SD Turbo](https://huggingface.co/stabilityai/sd-turbo#direct-use) ·
+[SDXL Turbo](https://huggingface.co/stabilityai/sdxl-turbo#direct-use)
+
+Image upscaling uses the RRDBNet architecture and Real-ESRGAN x4plus weights by Xintao Wang.
+[Real-ESRGAN, BSD-3-Clause](https://github.com/xinntao/Real-ESRGAN/blob/master/LICENSE)
 
 ### Author
 

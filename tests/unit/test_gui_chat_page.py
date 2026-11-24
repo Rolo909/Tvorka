@@ -14,9 +14,9 @@ from test_advisor import machine
 from test_chat_worker import stub_command
 
 from tvorka.core.chats import ChatStore
+from tvorka.core.llm import runtime
 from tvorka.core.settings import Settings
 from tvorka.gui import theme
-from tvorka.gui.pages import chat as chat_page
 from tvorka.gui.pages.chat import ChatPage
 from tvorka.gui.services import Services
 from tvorka.i18n import set_language
@@ -33,7 +33,7 @@ def services(tmp_path: Path, qapp, monkeypatch: pytest.MonkeyPatch):
     monkeypatch.setattr(services, "installed", lambda spec: True)
     monkeypatch.setattr(services.store, "chat_files", lambda spec: (tmp_path / "m.gguf", None))
     monkeypatch.setattr(services.store, "chat_mtp", lambda spec: None)
-    monkeypatch.setattr(chat_page.runtime, "server_path", lambda store, spec: tmp_path / "llama-server")
+    monkeypatch.setattr(runtime, "server_path", lambda store, spec: tmp_path / "llama-server")
     services.chat_worker._command = stub_command
     services.chat_worker.start()
     yield services

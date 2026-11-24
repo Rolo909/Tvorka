@@ -60,9 +60,12 @@ class WhisperEngine:
         samples = load_speech(path)
         if samples.size < RATE // 4 or float(np.abs(samples).mean()) < SILENCE:
             return ""
+        generation = getattr(getattr(self.pipe, "model", None), "generation_config", None)
+        # Transformers rejects the task parameter for English-only Whisper checkpoints.
+        kwargs = {} if getattr(generation, "is_multilingual", True) is False else {"task": "transcribe"}
         result = self.pipe({"raw": samples, "sampling_rate": RATE}, chunk_length_s=30,
                            batch_size=8 if self.device == "cuda" else 1,
-                           generate_kwargs={"task": "transcribe"})
+                           generate_kwargs=kwargs)
         return " ".join(str(result.get("text", "")).split())
 
     def unload(self) -> None:

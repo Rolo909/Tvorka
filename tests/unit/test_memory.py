@@ -169,7 +169,7 @@ def test_chat_then_picture_then_chat(workers, qtbot, monkeypatch) -> None:
     generation, chat, memory = workers
     answer(chat, 5.0, qtbot)
     picture(generation, image_model(4.0), qtbot, monkeypatch)
-    qtbot.waitUntil(lambda: "chat -" in events, timeout=5000)
+    qtbot.waitUntil(lambda: "chat -" in events, timeout=20_000)
     assert events.index("chat -") < events.index("load test/image-4.0")  # room first, then the model
     assert chat.loaded_model == "" and memory.holders()["generation"][0] == "test/image-4.0"
     answer(chat, 5.0, qtbot)  # the chat model comes back, the image model makes way

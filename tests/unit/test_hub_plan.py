@@ -2,8 +2,11 @@
 
 from __future__ import annotations
 
+from types import SimpleNamespace
+
 import pytest
 
+from tvorka.core import hub
 from tvorka.core.hub import plan_files
 
 GB = 1024**3
@@ -24,6 +27,38 @@ DIFFUSERS_META = {
     "README.md": 0, ".gitattributes": 0, "unet/config.json": 0, "vae/config.json": 0,
     "text_encoder/config.json": 0,
 }
+
+
+def test_whisper_hub_search_filters_for_transformers_asr(monkeypatch) -> None:
+    calls = []
+    model = SimpleNamespace(id="some/whisper-tiny", tags=["whisper", "transformers"], downloads=10,
+                            likes=0, gated=False)
+
+    def list_models(**kwargs):
+        calls.append(kwargs)
+        return [model]
+
+    monkeypatch.setattr(hub, "_api", lambda _token: SimpleNamespace(list_models=list_models))
+    [hit] = hub._search("transcribe", "tiny", 10, None)
+    assert (hit.id, hit.kind) == (model.id, "transcribe")
+    assert calls == [{"pipeline_tag": "automatic-speech-recognition", "filter": ["transformers", "whisper"],
+                      "search": "tiny", "sort": "downloads", "limit": 10}]
+
+
+def test_add_whisper_repository_uses_recognition_engine(monkeypatch) -> None:
+    info = SimpleNamespace(pipeline_tag="automatic-speech-recognition", tags=["whisper", "transformers"],
+                           gated=False, card_data={"license": "apache-2.0"}, library_name="transformers")
+    files = repo({"config.json": 0, "preprocessor_config.json": 0, "tokenizer.json": 0,
+                  "model.safetensors": 0.29, "pytorch_model.bin": 0.29, "tf_model.h5": 0.29})
+    monkeypatch.setattr(hub, "repo_siblings", lambda *_args: (info, files))
+    monkeypatch.setattr(hub, "_read_json", lambda *_args: {"model_type": "whisper"})
+    spec = hub.spec_from_repo("some/whisper-base")
+    assert (spec.source, spec.kind, spec.engine) == ("hf", "transcribe", "whisper")
+    assert spec.download_gb == 0.29 and spec.memory == {"model": 0.29}
+
+    monkeypatch.setattr(hub, "_read_json", lambda *_args: {"model_type": "wav2vec2"})
+    with pytest.raises(hub.HubError, match="wav2vec2"):
+        hub.spec_from_repo("some/wav2vec2-base")
 
 SDXL_TURBO = {
     **DIFFUSERS_META,

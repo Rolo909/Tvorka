@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import json
 import struct
+import sys
 import zipfile
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -64,6 +66,38 @@ def test_single_sd15_checkpoint(tmp_path: Path) -> None:
     assert set(spec.memory) == {"unet", "text_encoder", "vae"}
     assert spec.memory["unet"] >= spec.memory["text_encoder"] >= spec.memory["vae"]
     assert "sd15" in spec.tags
+
+
+def test_single_file_loads_legacy_config_offline(tmp_path: Path, monkeypatch) -> None:
+    from tvorka.engines.diffusers_base import DiffusersEngine
+
+    checkpoint = tmp_path / "model.safetensors"
+    write_safetensors(checkpoint, SD15)
+    config = checkpoint.with_suffix("")
+    config.mkdir()
+    contents = {"feature_extractor": ["transformers", "CLIPFeatureExtractor"]}
+    (config / "model_index.json").write_text(json.dumps(contents))
+    processor = object()
+    calls = []
+
+    def load_processor(folder, *, local_files_only):
+        calls.append((folder, local_files_only))
+        return processor
+
+    pipe = SimpleNamespace(
+        load_config=lambda _path: contents,
+        from_single_file=lambda _path, **kwargs: kwargs,
+    )
+    libraries = SimpleNamespace(StableDiffusionPipeline=pipe)
+    transformers = SimpleNamespace(CLIPImageProcessor=SimpleNamespace(from_pretrained=load_processor))
+    monkeypatch.setitem(sys.modules, "transformers", transformers)
+
+    result = DiffusersEngine._load_single_file(libraries, checkpoint, "float16")
+
+    assert calls == [(str(config / "feature_extractor"), True)]
+    assert result == {"dtype": "float16", "config": str(config), "local_files_only": True,
+                      "feature_extractor": processor}
+
 
 
 def test_fp32_checkpoint_memory_is_halved(tmp_path: Path) -> None:
@@ -130,11 +164,19 @@ def test_vits_and_bark_folders(tmp_path: Path) -> None:
             (bark / "speaker_embeddings" / "v2" / f"{name}_{part}_prompt.npy").write_bytes(b"")
     assert [v["id"] for v in spec_from_path(bark).voices] == ["v2/en_speaker_6", "v2/ru_speaker_3"]
 
-    other = tmp_path / "whisper"
-    other.mkdir()
-    (other / "config.json").write_text(json.dumps({"model_type": "whisper"}))
+
+def test_whisper_folder_requires_transformers_files(tmp_path: Path) -> None:
+    (tmp_path / "config.json").write_text(json.dumps({"model_type": "whisper"}))
+    (tmp_path / "preprocessor_config.json").write_text("{}")
+    (tmp_path / "tokenizer.json").write_text("{}")
+    (tmp_path / "model.bin").write_bytes(b"ctranslate2")
     with pytest.raises(HubError):
-        spec_from_path(other)
+        spec_from_path(tmp_path)
+
+    write_safetensors(tmp_path / "model.safetensors", {"w": ("F32", 2 * MB)})
+    spec = spec_from_path(tmp_path)
+    assert (spec.source, spec.kind, spec.engine) == ("local", "transcribe", "whisper")
+    assert spec.path == str(tmp_path) and spec.memory["model"] > 0
 
 
 def test_silero_package(tmp_path: Path) -> None:

@@ -30,6 +30,7 @@ class Settings:
     models_dir: str = ""
     performance_mode: str = "auto"
     keep_model_loaded: bool = True
+    auto_translate: bool = True  # prompts in other languages go to image and video models in English
     hf_token: str = ""
     catalog_url: str = DEFAULT_CATALOG_URL
     auto_update_catalog: bool = True

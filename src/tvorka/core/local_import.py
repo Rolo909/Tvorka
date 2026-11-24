@@ -1,7 +1,7 @@
 """Turn a model the user already has on disk into a :class:`ModelSpec`.
 
 Supported: a diffusers folder (``model_index.json``), a single Stable Diffusion
-checkpoint (``.safetensors`` / ``.ckpt``), a transformers TTS folder (VITS / Bark),
+checkpoint (``.safetensors`` / ``.ckpt``), a Transformers folder (VITS, Bark or Whisper),
 a Silero ``.pt`` package and a GGUF chat model (a ``.gguf`` file, or a folder with
 one; a ``mmproj`` file next to it lets the model see images). Memory is estimated
 from the files on disk.
@@ -25,6 +25,7 @@ from tvorka.core.hub import (
     _fill_diffusers_defaults,
     _fit_sd_generation,
     fill_chat_spec,
+    fill_whisper_spec,
     plan_files,
 )
 from tvorka.core.llm import gguf
@@ -48,7 +49,7 @@ def spec_from_path(path: str | Path, kind_hint: str | None = None) -> ModelSpec:
         if (target / "model_index.json").is_file():
             return _diffusers_folder(target, kind_hint)
         if (target / "config.json").is_file():
-            return _tts_folder(target)
+            return _transformers_folder(target)
         quants = gguf.group_quants([(p.name, p.stat().st_size) for p in target.glob("*.gguf")])
         if len(quants) == 1:
             return _gguf_file(target / quants[0]["files"][0])
@@ -214,9 +215,13 @@ def _single_file_memory(file: Path) -> dict[str, float]:
     return {k: round(v / GB, 2) for k, v in parts.items() if v}
 
 
-def _tts_folder(folder: Path) -> ModelSpec:
+def _transformers_folder(folder: Path) -> ModelSpec:
     config = _read_json(folder / "config.json")
     model_type = str(config.get("model_type", ""))
+    if model_type == "whisper":
+        spec = _base_spec(folder, "transcribe")
+        fill_whisper_spec(spec, plan_files(_listing(folder)))
+        return spec
     if model_type not in TTS_MODEL_TYPES:
         raise HubError("unsupported", f"{folder.name} ({model_type or '?'})")
     plan = plan_files(_listing(folder))
