@@ -10,7 +10,7 @@ from pathlib import Path
 from PySide6.QtCore import QObject, Signal
 
 from tvorka.core import hardware, paths
-from tvorka.core.advisor import Fit, assess, llm_gpu
+from tvorka.core.advisor import Fit, LlmPlan, assess, llm_gpu
 from tvorka.core.catalog import Catalog, ModelSpec
 from tvorka.core.chats import ChatStore
 from tvorka.core.hardware import Hardware
@@ -20,7 +20,7 @@ from tvorka.core.memory import VideoMemory
 from tvorka.core.settings import Settings
 from tvorka.core.store import ModelStore
 from tvorka.engines.plugins import PluginInfo
-from tvorka.workers.chat import ChatSession, ChatWorker
+from tvorka.workers.chat import ChatSession, ChatWorker, Launch
 from tvorka.workers.downloads import DownloadManager, run_async
 from tvorka.workers.generation import GenerationWorker
 from tvorka.workers.stt import SttWorker
@@ -54,8 +54,17 @@ class Services(QObject):
         self.worker = GenerationWorker(settings, self.catalog, self.store, self.history)
         self.chat_worker = ChatWorker(paths.data_dir() / "logs" / "llama-server.log")
         self.chat = ChatSession(ChatStore(paths.data_dir() / "chats"), self.chat_worker)
+        self.chat_speech_jobs: dict[int, tuple[str, dict]] = {}  # job id -> conversation id, request card
+        for conv in self.chat.conversations:
+            for message in conv.messages:
+                for tool in message.tools:
+                    if tool.get("chat_speech") and tool.get("status") == "running":
+                        tool["status"] = "failed"  # the generation queue does not survive a restart
         self.stt = SttWorker()
         self.memory = VideoMemory()  # the chat server and the generation engine share the card
+        from tvorka.gui.assist import Assistant
+
+        self.assistant = Assistant(self)  # the chat model helping the other sections
         self.worker.attach_memory(self.memory)
         self.chat_worker.attach_memory(self.memory)
         self.hardware: Hardware | None = None
@@ -114,6 +123,18 @@ class Services(QObject):
             return None
         build = runtime.pick_build(self.hardware)
         return runtime.runtime_spec(build) if build else None
+
+    def chat_launch(self, spec: ModelSpec, ctx: int = 0) -> Launch | None:
+        """How to start the llama.cpp server for ``spec`` on this computer; None when not ready."""
+        fit = self.fit(spec, ctx=ctx)
+        engine = self.chat_runtime()
+        if fit is None or not isinstance(fit.plan, LlmPlan) or engine is None:
+            return None
+        exe = runtime.server_path(self.store, engine)
+        model, projector = self.store.chat_files(spec)
+        if exe is None or model is None:
+            return None
+        return Launch(spec.id, exe, model, fit.plan, projector, self.store.chat_mtp(spec), fit.need_vram_gb)
 
     def stt_model(self) -> ModelSpec | None:
         """The speech recognition model to use: the best installed one for this computer."""

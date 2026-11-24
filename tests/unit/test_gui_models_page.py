@@ -10,6 +10,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("pytestqt")
 
+from tvorka.core import hub
 from tvorka.core.settings import Settings
 from tvorka.gui import theme
 from tvorka.gui.pages.models import ModelsPage
@@ -107,3 +108,22 @@ def test_gguf_file_can_be_added(page: ModelsPage, make_gguf, qtbot) -> None:
     assert page._preview_spec.kind == "chat"
     page._add_previewed()
     assert page.services.catalog.get("local/tiny-q4_k_m") is not None
+
+
+def test_whisper_search_discards_a_previous_model_kind(page: ModelsPage, monkeypatch) -> None:
+    from PySide6.QtWidgets import QLabel
+
+    from tvorka.gui.pages import models as models_page
+
+    callbacks = []
+    monkeypatch.setattr(models_page, "run_async", lambda _job, done, failed: callbacks.append((done, failed)))
+    page.tab.set_value("hub")
+    page._run_search()
+    old_done, old_failed = callbacks[-1]
+    page.kind.set_value("transcribe")
+    page._run_search()
+    callbacks[-1][0]([hub.HubHit("some/whisper-tiny", "transcribe")])
+    old_done([hub.HubHit("some/image", "image")])
+    old_failed(hub.HubError("network"))
+    row = page.list.itemAt(0).widget()
+    assert "some/whisper-tiny" in {widget.text() for widget in row.findChildren(QLabel)}

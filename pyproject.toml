@@ -30,6 +30,7 @@ dependencies = [
     "ftfy>=6.1",
     "protobuf>=4.25",
     "peft>=0.13",
+    "scipy>=1.11",
 ]
 
 [project.optional-dependencies]

@@ -14,6 +14,7 @@ pytest.importorskip("pytestqt")
 from PIL import Image
 from test_stt import write_wav
 
+from tvorka.core.chats import Message
 from tvorka.core.jobs import Job, Result
 from tvorka.core.settings import Settings
 from tvorka.engines import media
@@ -62,7 +63,8 @@ def test_every_kind_has_its_routes(window, tmp_path: Path) -> None:
     assert routes(window, image) == {("image", "reference"), ("image", "settings"), ("video", "first_frame"),
                                      ("chat", "attachment")}
     video = handoff.from_result(work(services, "video", clip(tmp_path / "v.mp4")), "video")
-    assert routes(window, video) == {("video", "first_frame"), ("chat", "attachment")}
+    assert routes(window, video) == {("video", "first_frame"), ("chat", "attachment"),
+                                     ("chat", "describe_video"), ("chat", "narrate_video")}
     voice = handoff.from_result(work(services, "speech", write_wav(tmp_path / "s.wav")), "speech")
     assert routes(window, voice) == {("chat", "attachment")}  # no clip on the Video page yet
     window.page("video")._current = str(tmp_path / "v.mp4")
@@ -98,6 +100,19 @@ def test_continue_the_clip_from_its_last_frame(window, tmp_path: Path) -> None:
     assert video.parent_for("", str(frame)) == source.id
 
 
+def test_narration_handoff_attaches_video_and_preserves_draft(window, tmp_path: Path, qtbot) -> None:
+    chat = window.page("chat")
+    chat.text.setPlainText("Спокойный тон.")
+    source = clip(tmp_path / "v.mp4")
+    window.send(handoff.from_path(source, "video"), Route("chat", "narrate_video", ""))
+
+    assert window.current_page() is chat
+    assert chat.text.toPlainText().startswith("Спокойный тон.\n\nНапиши короткий закадровый текст")
+    qtbot.waitUntil(lambda: bool(chat._pending()), timeout=5_000)
+    assert chat._pending()[0].images and chat._pending()[0].text_only
+    assert not chat._conv.messages
+
+
 def test_chat_answer_becomes_a_prompt_with_lineage(window, monkeypatch) -> None:
     image = window.page("image")
     monkeypatch.setattr(window.services, "installed", lambda spec: True)
@@ -112,6 +127,57 @@ def test_chat_answer_becomes_a_prompt_with_lineage(window, monkeypatch) -> None:
     image.prompt.setPlainText("Something else")  # typed over: a new work of its own
     image.generate()
     assert "parent" not in jobs[-1].params
+
+
+def test_chat_can_draw_one_numbered_variant(window, monkeypatch) -> None:
+    from PySide6.QtWidgets import QPushButton
+
+    from tvorka.gui.widgets.basic import Disclosure
+
+    chat = window.page("chat")
+    chat._conv.messages = [Message(
+        "assistant",
+        "Try these:\n\n1. **A red lighthouse**\n   in a storm\n\n"
+        "   Cinematic light.\n\n2. A tower at dawn\n\n"
+        "```text\n1. Code sample\n2. Another line\n```",
+    )]
+    chat._render()
+    view = chat._views[0]
+    panel = next(widget for widget in view.findChildren(Disclosure)
+                 if widget.toggle.text() == "Варианты промпта")
+    assert not panel.content.isVisibleTo(view)
+    panel.toggle.click()
+    buttons = [button for button in panel.findChildren(QPushButton) if button.text() == "Нарисовать"]
+    assert len(buttons) == 2 and all(button.isVisibleTo(view) for button in buttons)
+
+    jobs = []
+    monkeypatch.setattr(window.services.worker, "submit", jobs.append)
+    buttons[0].click()
+
+    image = window.page("image")
+    assert window.current_page() is image
+    assert image.prompt.toPlainText() == "A red lighthouse in a storm\nCinematic light."
+    assert image.parent_for(image.prompt.toPlainText()) == f"chat:{chat._conv.id}"
+    assert not jobs
+
+
+def test_chat_send_uses_the_selected_answer_text(window, monkeypatch) -> None:
+    chat = window.page("chat")
+    chat._conv.messages = [Message("assistant", "First part. Second part.")]
+    chat._render()
+    chat._render()
+    view = chat._views[0]
+    captured = []
+    monkeypatch.setattr(chat, "send_menu", captured.append)
+    send_button = next(button for button in view.buttons if button.toolTip().startswith("Отправить"))
+    view.body.setSelection(12, 12)
+    send_button.click()
+    view.body.setSelection(0, 0)
+    send_button.click()
+
+    assert captured[0].text == "Second part."
+    assert captured[0].parent == f"chat:{chat._conv.id}"
+    assert captured[1].text == "First part. Second part."
 
 
 def test_gallery_repeat_goes_through_the_protocol(window, tmp_path: Path) -> None:

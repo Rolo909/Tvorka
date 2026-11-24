@@ -134,6 +134,18 @@ class DiffusersEngine(Engine):
         if family not in SINGLE_FILE_PIPELINES:
             raise EngineError("unsupported", f"{path.name} ({family or 'unknown'})")
         cls = getattr(diffusers, SINGLE_FILE_PIPELINES[family])
+        config = path.with_suffix("")
+        if (config / "model_index.json").is_file():
+            kwargs: dict[str, Any] = {}
+            extractor = cls.load_config(str(config)).get("feature_extractor")
+            if extractor == ["transformers", "CLIPFeatureExtractor"]:
+                from transformers import CLIPImageProcessor
+
+                kwargs["feature_extractor"] = CLIPImageProcessor.from_pretrained(
+                    str(config / "feature_extractor"), local_files_only=True,
+                )
+            return cls.from_single_file(str(path), dtype=dtype, config=str(config), local_files_only=True,
+                                        **kwargs)
         return cls.from_single_file(str(path), dtype=dtype)
 
     def unload(self) -> None:

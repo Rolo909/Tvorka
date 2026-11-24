@@ -25,6 +25,7 @@ from PySide6.QtWidgets import (
 from tvorka.core import advisor, paths
 from tvorka.core.catalog import ModelSpec
 from tvorka.core.jobs import Job, Result, output_file
+from tvorka.core.llm import prompts
 from tvorka.engines import media
 from tvorka.engines.media import VIDEO_FORMATS
 from tvorka.gui import handoff, icons
@@ -33,6 +34,7 @@ from tvorka.gui.pages.base import Page
 from tvorka.gui.pages.gallery import show_in_folder
 from tvorka.gui.services import Services
 from tvorka.gui.widgets.aspect import AspectPicker
+from tvorka.gui.widgets.assist_bar import Action, AssistBar
 from tvorka.gui.widgets.basic import (
     Card,
     Disclosure,
@@ -47,7 +49,6 @@ from tvorka.gui.widgets.canvas import Canvas, FilmStrip
 from tvorka.gui.widgets.dropzone import DropZone
 from tvorka.gui.widgets.feedback import ToastHost
 from tvorka.gui.widgets.fit import FitBanner
-from tvorka.gui.widgets.mic import mic_bar
 from tvorka.gui.widgets.model_card import size_text
 from tvorka.i18n import language, messages, tr
 from tvorka.workers.downloads import run_async
@@ -107,7 +108,8 @@ class VideoPage(Page):
         self.prompt.setAccessibleName(tr("Prompt"))
         self.prompt.textChanged.connect(self._update_action)
         column.addWidget(self.prompt)
-        column.addWidget(mic_bar(self, self.prompt))
+        self.assist = AssistBar(self, self._assist_actions(), self.prompt)
+        column.addWidget(self.assist)
         column.addWidget(label(tr("Tip: most models understand English best."), "faint"))
 
         model_card = Card(tr("Model"))
@@ -274,6 +276,26 @@ class VideoPage(Page):
         if index >= 0:
             self.model_box.setCurrentIndex(index)
 
+    # ============================================================ the chat model as a helper
+    def _assist_actions(self) -> list[Action]:
+        def prompt() -> str:
+            return self.prompt.toPlainText().strip()
+
+        return [
+            Action("improve", tr("Improve"),
+                   tr("The chat model turns the idea into one shot: what moves, how the camera goes, "
+                      "the light"),
+                   lambda: prompts.improve_prompt(prompt(), "video") if prompt() else None, self._set_prompt,
+                   lambda: bool(prompt()), title=tr("Improved prompt"), icon="spark"),
+            Action("translate", tr("To English"), tr("Most video models understand English best"),
+                   lambda: prompts.translate_prompt(prompt()) if prompt() else None, self._set_prompt,
+                   lambda: prompts.needs_translation(prompt()), title=tr("Translation")),
+        ]
+
+    def _set_prompt(self, text: str) -> None:
+        self.prompt.setPlainText(text)
+        self.prompt.setFocus()
+
     # ============================================================ handoff (gui/handoff.py)
     def routes(self, asset: Asset) -> list[Route]:
         if asset.kind == "image" and asset.path:
@@ -420,6 +442,7 @@ class VideoPage(Page):
         self._refresh_fit()
 
     def _update_action(self) -> None:
+        self.assist.refresh()
         spec = self._spec
         self.stop.setVisible(bool(self._jobs))
         if spec is None:
@@ -456,7 +479,8 @@ class VideoPage(Page):
 
     def generate(self) -> None:
         spec = self._spec
-        if spec is None or not self.action.isEnabled() or not self.services.installed(spec):
+        if spec is None or not self.action.isEnabled() or not self.services.installed(spec) \
+                or getattr(self, "_translating", False):
             return
         width, height = self._target()
         fps = self.fps.value()
@@ -474,11 +498,21 @@ class VideoPage(Page):
         parent = self.parent_for(self.prompt.toPlainText(), self.dropzone.path())
         if parent:
             params["parent"] = parent
-        job = Job("video", spec.id, self.prompt.toPlainText().strip(), params)
-        self._jobs.add(job.id)
         self._remember()
         self._pause()
         self.view.setCurrentIndex(0)
+        self._translating = True
+        if self.in_english(self.prompt.toPlainText().strip(), lambda text, original: self._submit(
+                spec.id, text, original, params)):
+            self.canvas.set_progress(0.0, tr("Translating the prompt into English…"))
+            self._update_action()
+
+    def _submit(self, model_id: str, prompt: str, original: str, params: dict[str, Any]) -> None:
+        self._translating = False
+        if original:
+            params["prompt_original"] = original
+        job = Job("video", model_id, prompt, params)
+        self._jobs.add(job.id)
         self.canvas.set_progress(0.0, tr("Waiting in the queue…"))
         self.services.worker.submit(job)
         self._update_action()

@@ -21,16 +21,18 @@ from PySide6.QtWidgets import (
 
 from tvorka.core.catalog import ModelSpec
 from tvorka.core.jobs import Job
+from tvorka.core.llm import prompts
+from tvorka.core.llm.prompts import Task
 from tvorka.engines.media import AUDIO_FORMATS
 from tvorka.gui import handoff, icons
 from tvorka.gui.handoff import Asset, Route
 from tvorka.gui.pages.base import Page
 from tvorka.gui.pages.gallery import show_in_folder
 from tvorka.gui.services import Services
+from tvorka.gui.widgets.assist_bar import Action, AssistBar
 from tvorka.gui.widgets.basic import Card, Field, Segmented, SliderField, label, tool_button
 from tvorka.gui.widgets.feedback import ToastHost
 from tvorka.gui.widgets.fit import FitBanner
-from tvorka.gui.widgets.mic import MicButton
 from tvorka.gui.widgets.model_card import size_text
 from tvorka.gui.widgets.waveform import WaveformView
 from tvorka.i18n import language, messages, tr
@@ -149,11 +151,18 @@ class SpeechPage(Page):
         self.text.textChanged.connect(self._text_changed)
         column.addWidget(self.text)
         self.counter = label("", "faint")
-        counter_row = QHBoxLayout()
-        counter_row.addWidget(self.counter, 1)
-        self.mic = MicButton(self, self.text)
-        counter_row.addWidget(self.mic)
-        column.addLayout(counter_row)
+        column.addWidget(self.counter)
+        self.assist = AssistBar(self, [
+            Action("prepare", tr("Prepare the text"),
+                   tr("The chat model writes numbers and abbreviations out in words, fixes punctuation and "
+                      "the letter ё — for a clean reading"),
+                   self._prepare_task, self.text.setPlainText, lambda: bool(self.text.toPlainText().strip()),
+                   title=tr("Text ready for reading"), icon="spark"),
+            Action("translate", tr("Translate"), tr("Translate the text into the selected voice's language"),
+                   self._translate_task, self.text.setPlainText, self._can_translate,
+                   title=tr("Translation")),
+        ], self.text)
+        column.addWidget(self.assist)
 
         model_card = Card(tr("Model"))
         self.model_box = QComboBox()
@@ -173,6 +182,7 @@ class SpeechPage(Page):
         row.setSpacing(8)
         self.voice = QComboBox()
         self.voice.setAccessibleName(tr("Speaker"))
+        self.voice.currentIndexChanged.connect(self._voice_changed)
         self.sample = QPushButton(tr("Listen"))
         self.sample.setIcon(icons.icon("play"))
         self.sample.setToolTip(tr("Hear a short sample of this voice"))
@@ -264,6 +274,7 @@ class SpeechPage(Page):
         if role == "text":
             self.text.setPlainText(asset.text.strip())
             self.text.setFocus()
+            self.note_received(asset, asset.text)
 
     def voice_name(self, model_id: str, voice_id: str) -> str:
         spec = self.services.catalog.get(model_id)
@@ -298,7 +309,38 @@ class SpeechPage(Page):
         self._update_action()
 
     # ============================================================ state
+    def _prepare_task(self) -> Task | None:
+        text = self.text.toPlainText()
+        return prompts.prepare_speech(text) if text.strip() else None
+
+    def _voice_language(self) -> str:
+        spec = self._spec
+        if spec is None:
+            return ""
+        if len(spec.languages) == 1:
+            return spec.languages[0]
+        voice_id = self.voice.currentData() or ""
+        if spec.engine == "edge":
+            code = voice_id.split("-", 1)[0]
+        elif spec.id == "suno/bark-small":
+            code = voice_id.rsplit("/", 1)[-1].split("_", 1)[0]
+        else:
+            return ""
+        return code if code in spec.languages else ""
+
+    def _can_translate(self) -> bool:
+        return bool(self.text.toPlainText().strip() and self._voice_language())
+
+    def _translate_task(self) -> Task | None:
+        return (prompts.translate_speech(self.text.toPlainText(), self._voice_language())
+                if self._can_translate() else None)
+
+    def _voice_changed(self, _index: int) -> None:
+        self.assist.dismiss()
+        self.assist.refresh()
+
     def _text_changed(self) -> None:
+        self.assist.refresh()
         text = self.text.toPlainText().strip()
         seconds = len(text) / CHARS_PER_SECOND / max(0.5, self.speed.value() or 1.0)
         self.counter.setText(tr("{chars} characters · about {seconds:.0f} s of speech", chars=len(text),
@@ -342,12 +384,27 @@ class SpeechPage(Page):
             return
         self.generate()
 
-    def _job(self, text: str, preview: bool = False) -> Job:
+    def _job(self, text: str, preview: bool = False, parent: str = "") -> Job:
         assert self._spec is not None
-        return Job("speech", self._spec.id, text, {
-            "voice": self.voice.currentData() or None, "speed": self.speed.value(),
-            "format": "wav" if preview else self.file_format.value(), "preview": preview,
-        })
+        params = {"voice": self.voice.currentData() or None, "speed": self.speed.value(),
+                  "format": "wav" if preview else self.file_format.value(), "preview": preview}
+        parent = "" if preview else parent or self.parent_for(text)
+        if parent:
+            params["parent"] = parent
+        return Job("speech", self._spec.id, text, params)
+
+    def chat_job(self, text: str, parent: str) -> Job | None:
+        """Use the chosen local voice without changing the text on this page."""
+        spec = self._spec
+        if spec is None or spec.source == "online" or not self.services.installed(spec) \
+                or self.services.downloads.is_active(spec.id):
+            return None
+        fit = self.services.fit(spec)
+        if fit is not None and not fit.ok:
+            return None
+        job = self._job(text, parent=parent)
+        job.params["chat_speech"] = True
+        return job
 
     def generate(self) -> None:
         if self._spec is None or not self.action.isEnabled() or not self.services.installed(self._spec):
@@ -388,6 +445,9 @@ class SpeechPage(Page):
                 self._play_file(results[0]["path"])
             return
         if job_id not in self._jobs:
+            for result in results:
+                if result.get("kind") == "speech" and result.get("params", {}).get("chat_speech"):
+                    self._add_row(result, top=True)
             return
         self._jobs.discard(job_id)
         for result in results:

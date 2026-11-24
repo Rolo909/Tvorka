@@ -2,12 +2,16 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+
 from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QWidget
 
+from tvorka.core.llm import prompts
 from tvorka.gui.handoff import Asset, Route
 from tvorka.gui.services import Services
 from tvorka.gui.widgets.feedback import ToastHost
+from tvorka.i18n import tr
 
 
 class Page(QWidget):
@@ -56,6 +60,27 @@ class Page(QWidget):
             return ""
         asset, value = received
         return asset.parent if value and any(v.strip() == value.strip() for v in values if v) else ""
+
+    def in_english(self, prompt: str, go: Callable[[str, str], None]) -> bool:
+        """Call ``go(prompt_for_the_model, original)``: translated by the chat model first when the
+        prompt is not English and that is on in the settings. True while it waits for the translation."""
+        services = self.services
+        if not (services.settings.auto_translate and prompts.needs_translation(prompt)) \
+                or services.assistant.model() is None:
+            go(prompt, "")
+            return False
+
+        def done(answer: str) -> None:
+            english = prompts.clean(answer)
+            go(english or prompt, prompt if english else "")
+
+        def failed(code: str) -> None:
+            if self.toasts is not None and code != "cancelled":
+                self.toasts.show(tr("The prompt could not be translated; it goes as written."), "info")
+            go(prompt, "")
+
+        services.assistant.ask(prompts.translate_prompt(prompt), done, failed)
+        return True
 
     def send_menu(self, asset: Asset, anchor: QWidget | None = None) -> None:
         """Show "Send to…" for ``asset`` under ``anchor`` (or at the cursor)."""

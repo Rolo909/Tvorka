@@ -4,6 +4,20 @@
 """
 
 RU: dict[str, str] = {
+    "Add LoRA": "Добавить LoRA",
+    "LoRA": "LoRA",
+    "LoRA weight": "Вес LoRA",
+    "Remove LoRA": "Убрать LoRA",
+    "Choose adapters made for the selected model family.": "Выбирайте адаптеры для семейства выбранной модели.",
+    "This model generates at a fixed size.": "Модель генерирует в фиксированном размере.",
+    "The requested size exceeds the model's direct generation limit.":
+        "Запрошенный размер превышает предел прямой генерации модели.",
+    "{w} × {h} px — the model draws {gw} × {gh}, then adjusts to the requested size":
+        "{w} × {h} px — модель рисует {gw} × {gh}, затем изображение приводится к нужному размеру",
+    "The edges are cropped to fill the requested proportions.": "Края обрезаются под запрошенные пропорции.",
+    "No usable audio format for this microphone.": "Не найден подходящий формат записи для микрофона.",
+    "The microphone could not start recording.": "Микрофон не смог начать запись.",
+    "The microphone stopped recording.": "Микрофон прекратил запись.",
     # --- engine errors -------------------------------------------------------------
     "Something went wrong. Details are in the log (Settings → Open log).":
         "Что-то пошло не так. Подробности — в журнале (Настройки → Открыть журнал).",
@@ -271,6 +285,12 @@ RU: dict[str, str] = {
     "Your voice-overs will appear here. Write a few sentences on the left and press “Read aloud”.":
         "Здесь появятся ваши озвучки. Напишите пару предложений слева и нажмите «Озвучить».",
     "Play": "Воспроизвести",
+    "Read answer aloud": "Озвучить ответ",
+    "Answer audio": "Озвучка ответа",
+    "Playback position": "Позиция воспроизведения",
+    "The audio file is missing.": "Аудиофайл не найден.",
+    "Could not play the audio.": "Не удалось воспроизвести аудио.",
+    "Speech synthesis did not finish.": "Озвучка не завершилась.",
     "Pause": "Пауза",
     # --- video page ----------------------------------------------------------------
     "Describe a scene and its motion — or bring it to life from a picture.":
@@ -646,6 +666,7 @@ RU: dict[str, str] = {
     "Made from a chat answer": "Создано из ответа в чате",
     "Use as a reference": "Использовать как референс",
     "Draw this": "Нарисовать",
+    "Prompt variants": "Варианты промпта",
     "Continue the clip: its last frame starts a new one":
         "Продолжить ролик: его последний кадр станет первым кадром нового",
     "This frame to the Image page as a reference": "Этот кадр — референсом на страницу «Изображение»",
@@ -658,4 +679,70 @@ RU: dict[str, str] = {
     "Drag the picture to another section or out of Tvorka":
         "Перетащите картинку в другой раздел или за пределы Tvorka",
     "Send to… (draw it, make a video, read aloud)": "Отправить в… (нарисовать, сделать видео, озвучить)",
+    # --- the chat model as a helper ------------------------------------------------------
+    "The prompt could not be translated; it goes as written.":
+        "Промпт не удалось перевести — он уходит как написан.",
+    "Translating the prompt into English…": "Переводим промпт на английский…",
+    "Improve": "Улучшить",
+    "The chat model rewrites the prompt: more detail, in the wording this model understands best":
+        "Чат-модель перепишет промпт: больше деталей, в той форме, которую эта модель понимает лучше всего",
+    "To English": "На английский",
+    "Most image models understand English best": "Большинство моделей изображений лучше понимают английский",
+    "Suggest what must not appear in the picture": "Предложить, чего не должно быть на картинке",
+    "From the picture": "По картинке",
+    "The chat model describes the reference as a prompt": "Чат-модель опишет референс как промпт",
+    "Check the result": "Оценить и улучшить",
+    "The chat model compares the picture with the prompt and suggests a better one":
+        "Чат-модель сравнит картинку с промптом и предложит промпт лучше",
+    "Improved prompt": "Улучшенный промпт",
+    "Translation": "Перевод",
+    "Translate": "Перевести",
+    "Translate the text into the selected voice's language": "Перевести текст на язык выбранного голоса",
+    "Describe the video": "Описать видео",
+    "Write narration for the video": "Написать текст за кадром",
+    "Describe what happens in the attached video in chronological order. Reply with text only and do not call tools.":
+        "Опиши, что происходит в приложенном видео, в хронологическом порядке. Ответь текстом без вызова инструментов.",
+    "Write a short narration script for the attached video, following the action. "
+    "Reply with the script only and do not call tools.":
+        "Напиши короткий закадровый текст по событиям приложенного видео. Верни только текст без вызова инструментов.",
+    "Prompt from the picture": "Промпт по картинке",
+    "Translate prompts into English before creating": "Переводить промпт на английский перед созданием",
+    "Image and video models understand English best. Write in any language — "
+    "the chat model translates the prompt (the original stays in the field).":
+        "Модели изображений и видео лучше понимают английский. Пишите на любом языке — чат-модель "
+        "переведёт промпт (в поле останется ваш текст).",
+    "Prepare the text": "Подготовить текст",
+    "The chat model writes numbers and abbreviations out in words, fixes punctuation and the letter ё "
+    "— for a clean reading":
+        "Чат-модель распишет числа и сокращения словами, поправит пунктуацию и букву ё — чтобы прочитать "
+        "чисто",
+    "Text ready for reading": "Текст для чтения",
+    "The chat model turns the idea into one shot: what moves, how the camera goes, the light":
+        "Чат-модель превратит идею в один план: что движется, как идёт камера, какой свет",
+    "Most video models understand English best": "Большинство видеомоделей лучше понимают английский",
+    "Proposal": "Предложение",
+    "Apply": "Применить",
+    "The chat model is working on it…": "Чат-модель работает…",
+    "This needs a chat model. Download one on the Models page (Chat) — Qwen3.5 4B suits most "
+    "computers.":
+        "Для этого нужна чат-модель. Скачайте её на странице «Модели» (раздел «Чат») — Qwen3.5 4B "
+        "подойдёт большинству компьютеров.",
+    "This needs a chat model that sees images, with its image file downloaded.":
+        "Для этого нужна чат-модель, которая видит картинки, — вместе с её файлом для картинок.",
+    "The chat model gave an empty answer. Try again.": "Чат-модель ответила пустотой. Попробуйте ещё раз.",
+    # --- tools in the chat ---------------------------------------------------------------
+    "The model may suggest creating a picture, a video clip or a voice-over":
+        "Модель может предлагать создать картинку, видео или озвучку",
+    "It shows a card under its answer; nothing is created until you press “Create”.":
+        "Под ответом появится карточка; ничего не создаётся, пока вы не нажмёте «Создать».",
+    "The model suggests creating a picture": "Модель предлагает создать картинку",
+    "The model suggests creating a video clip": "Модель предлагает создать видео",
+    "The model suggests reading this aloud": "Модель предлагает озвучить текст",
+    "Edit first": "Сначала изменить",
+    "Open the section": "Открыть раздел",
+    "Being created…": "Создаётся…",
+    "Cancelled.": "Отменено.",
+    "Handed over to the section to edit.": "Передано в раздел для правки.",
+    "The model made a broken request. Ask again in other words.":
+        "Модель ошиблась в запросе. Попросите ещё раз другими словами.",
 }

@@ -225,12 +225,12 @@ class GenerationWorker(QThread):
         engine = create_engine(spec, plan)
         try:
             engine.load(ctx)
+            ctx.check()
         except BaseException:
             engine.unload()
             if self._memory is not None:
                 self._memory.released("generation")  # nothing of it stayed on the card
             raise
-        ctx.check()
         self._engine = engine
         self.model_changed.emit(spec.id)
         return engine

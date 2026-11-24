@@ -6,10 +6,11 @@ import logging
 import os
 import tempfile
 import time
+import wave
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import QObject, Qt, QTimer, QUrl, Signal
+from PySide6.QtCore import QObject, Qt, QTimer, Signal
 from PySide6.QtWidgets import QHBoxLayout, QPlainTextEdit, QToolButton, QWidget
 
 from tvorka.gui import icons
@@ -35,12 +36,15 @@ class QtRecorder(QObject):
 
     stopped = Signal(str)  # path of the finished recording
     error = Signal(str)
+    level = Signal(int)
 
     def __init__(self, parent: QObject | None = None) -> None:
         super().__init__(parent)
-        self._recorder: Any = None
-        self._session: Any = None
+        self._source: Any = None
+        self._input: Any = None
+        self._writer: wave.Wave_write | None = None
         self._file = ""
+        self._pending = b""
 
     @staticmethod
     def available() -> bool:
@@ -49,34 +53,96 @@ class QtRecorder(QObject):
         return bool(QMediaDevices.audioInputs())
 
     def record(self, file: Path) -> None:
-        from PySide6.QtMultimedia import QAudioInput, QMediaCaptureSession, QMediaFormat, QMediaRecorder
+        from PySide6.QtMultimedia import QAudio, QAudioSource, QMediaDevices
 
         self._file = str(file)
-        self._session = QMediaCaptureSession(self)
-        self._input = QAudioInput(self)
-        self._session.setAudioInput(self._input)
-        self._recorder = QMediaRecorder(self)
-        self._session.setRecorder(self._recorder)
-        media = QMediaFormat()
-        media.setFileFormat(QMediaFormat.FileFormat.Wave)
-        media.setAudioCodec(QMediaFormat.AudioCodec.Wave)
-        self._recorder.setMediaFormat(media)
-        self._recorder.setOutputLocation(QUrl.fromLocalFile(self._file))
-        self._recorder.recorderStateChanged.connect(self._state)
-        self._recorder.errorOccurred.connect(lambda _code, text: self.error.emit(text))
-        self._recorder.record()
+        device = QMediaDevices.defaultAudioInput()
+        fmt = device.preferredFormat()
+        if device.isNull() or not fmt.isValid():
+            self.error.emit(tr("No usable audio format for this microphone."))
+            return
+        try:
+            self._writer = wave.open(self._file, "wb")  # noqa: SIM115 - closed when recording ends
+            self._writer.setnchannels(fmt.channelCount())
+            self._writer.setsampwidth(2)
+            self._writer.setframerate(fmt.sampleRate())
+            self._pending = b""
+            self._source = QAudioSource(device, fmt, self)
+            self._input = self._source.start()
+        except OSError as exc:
+            self._finish(str(exc))
+            return
+        # PySide6 exposes distinct enum wrappers for QAudio and QtAudio on some versions.
+        if self._input is None or self._source.error().value != QAudio.Error.NoError.value:
+            self._finish(tr("The microphone could not start recording."))
+            return
+        self._source.stateChanged.connect(self._state)
+        self._input.readyRead.connect(self._consume)
 
     def stop(self) -> None:
-        if self._recorder is not None:
-            self._recorder.stop()
+        if self._source is not None:
+            self._consume()
+            if self._source is not None:  # reading may have failed
+                self._finish()
 
     def _state(self, state: Any) -> None:
-        from PySide6.QtMultimedia import QMediaRecorder
+        from PySide6.QtMultimedia import QAudio
 
-        if state == QMediaRecorder.RecorderState.StoppedState and self._recorder is not None:
-            location = self._recorder.actualLocation().toLocalFile() or self._file
-            self._recorder = None
-            self.stopped.emit(location)
+        if state.value == QAudio.State.StoppedState.value and self._source is not None:
+            self._finish(tr("The microphone stopped recording."))
+
+    def _consume(self) -> None:
+        if self._source is None or self._writer is None:
+            return
+        fmt = self._source.format()
+        data = self._pending + bytes(self._input.readAll())
+        end = len(data) - len(data) % fmt.bytesPerFrame()
+        self._pending = data[end:]
+        if not end:
+            return
+        samples, level = _pcm16(data[:end], fmt.sampleFormat())
+        try:
+            self._writer.writeframesraw(samples)
+        except OSError as exc:
+            self._finish(str(exc))
+            return
+        self.level.emit(level)
+
+    def _finish(self, error: str = "") -> None:
+        source, self._source = self._source, None
+        if source is not None:
+            source.stop()
+            source.deleteLater()
+        self._input = None
+        writer, self._writer = self._writer, None
+        if writer is not None:
+            try:
+                writer.close()
+            except OSError as exc:
+                error = error or str(exc)
+        if error:
+            self.error.emit(error)
+        else:
+            self.stopped.emit(self._file)
+
+
+def _pcm16(data: bytes, sample_format: Any) -> tuple[bytes, int]:
+    """Convert native input samples for the WAV writer and measure their peak."""
+    import numpy as np
+    from PySide6.QtMultimedia import QAudioFormat
+
+    formats = QAudioFormat.SampleFormat
+    if sample_format == formats.Int16:
+        samples = np.frombuffer(data, dtype=np.int16)
+    elif sample_format == formats.Int32:
+        samples = np.frombuffer(data, dtype=np.int32) >> 16
+    elif sample_format == formats.UInt8:
+        samples = (np.frombuffer(data, dtype=np.uint8).astype(np.int16) - 128) << 8
+    else:  # Qt's remaining PCM format is Float
+        samples = np.clip(np.frombuffer(data, dtype=np.float32), -1, 1) * 32767
+    samples = samples.astype("<i2", copy=False)
+    peak = int(np.abs(samples.astype(np.int32)).max(initial=0))
+    return samples.tobytes(), round(100 * peak / 32768)
 
 
 class MicButton(QToolButton):
@@ -93,6 +159,7 @@ class MicButton(QToolButton):
         self._started = 0.0
         self._request = 0
         self._file: Path | None = None
+        self._level = 0
         self._timer = QTimer(self)
         self._timer.setInterval(500)
         self._timer.timeout.connect(self._tick)
@@ -119,6 +186,8 @@ class MicButton(QToolButton):
         self.setIcon(icons.icon(glyph, color))
         self.setToolTip(tip)
         self.setAccessibleName(tip)
+        if state != "recording":
+            self._level = 0
         if state == "idle":
             self.setText("")
         self.setEnabled(state != "listening")
@@ -145,15 +214,17 @@ class MicButton(QToolButton):
         if self._wired is not self.recorder:
             self.recorder.stopped.connect(self._recorded)
             self.recorder.error.connect(self._record_error)
+            if hasattr(self.recorder, "level"):
+                self.recorder.level.connect(self._on_level)
             self._wired = self.recorder
         handle, name = tempfile.mkstemp(prefix="tvorka-voice-", suffix=".wav")
         os.close(handle)
         self._file = Path(name)
         self._started = time.monotonic()
-        self.recorder.record(self._file)
         self._show("recording")
         self._tick()
         self._timer.start()
+        self.recorder.record(self._file)
 
     def stop(self) -> None:
         if self.state == "recording" and self.recorder is not None:
@@ -164,9 +235,15 @@ class MicButton(QToolButton):
 
     def _tick(self) -> None:
         seconds = int(time.monotonic() - self._started)
-        self.setText(f"{seconds // 60}:{seconds % 60:02d}")
+        blocks = round(self._level / 20)
+        self.setText(f"{seconds // 60}:{seconds % 60:02d}  " + "▰" * blocks + "▱" * (5 - blocks))
         if seconds >= MAX_SECONDS:
             self.stop()
+
+    def _on_level(self, level: int) -> None:
+        if self.state == "recording":
+            self._level = level
+            self._tick()
 
     def _recorded(self, path: str) -> None:
         started = self.page.services.transcribe(Path(path))

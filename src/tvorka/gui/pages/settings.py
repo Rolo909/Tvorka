@@ -138,6 +138,13 @@ class SettingsPage(Page):
         perf.body.addWidget(self.keep_loaded)
         perf.body.addWidget(label(tr("Faster repeats; turn off to free memory for other programs."), "faint",
                                   wrap=True))
+        self.auto_translate = QCheckBox(tr("Translate prompts into English before creating"))
+        self.auto_translate.setChecked(settings.auto_translate)
+        self.auto_translate.toggled.connect(self._auto_translate_changed)
+        perf.body.addWidget(self.auto_translate)
+        hint = tr("Image and video models understand English best. Write in any language — "
+                  "the chat model translates the prompt (the original stays in the field).")
+        perf.body.addWidget(label(hint, "faint", wrap=True))
         column.addWidget(perf)
 
         column.addWidget(self._build_computer())
@@ -576,6 +583,10 @@ class SettingsPage(Page):
         self.mode_field.hint.setText(mode_text(mode)[1])
         self._save()
         self.services.models_changed.emit()  # pages re-evaluate the fit for the new mode
+
+    def _auto_translate_changed(self, checked: bool) -> None:
+        self.services.settings.auto_translate = checked
+        self._save()
 
     def _keep_loaded_changed(self, checked: bool) -> None:
         self.services.settings.keep_model_loaded = checked

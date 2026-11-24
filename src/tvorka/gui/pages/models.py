@@ -335,12 +335,16 @@ class ModelsPage(Page):
         _clear(self.list)
         self.list.addWidget(label(tr("Searching…"), "faint"))
         token = self.services.settings.token()
-        run_async(lambda: (query, hub.search(kind, query, 30, token)),
-                  self._show_hits, self._search_failed)
+        run_async(lambda: hub.search(kind, query, 30, token),
+                  lambda hits: self._show_hits(kind, query, hits),
+                  lambda exc: self._search_failed(kind, query, exc))
 
-    def _show_hits(self, payload: tuple[str, list[hub.HubHit]]) -> None:
-        query, hits = payload
-        if self.tab.value() != "hub" or query != self.search.text().strip():
+    def _matches_search(self, kind: str, query: str) -> bool:
+        return (self.tab.value() == "hub" and (self.kind.value() or "image") == kind
+                and self.search.text().strip() == query)
+
+    def _show_hits(self, kind: str, query: str, hits: list[hub.HubHit]) -> None:
+        if not self._matches_search(kind, query):
             return  # a newer search is on its way
         _clear(self.list)
         if not hits:
@@ -349,8 +353,8 @@ class ModelsPage(Page):
         for hit in hits:
             self.list.addWidget(self._hit_row(hit))
 
-    def _search_failed(self, exc: Exception) -> None:
-        if self.tab.value() != "hub":
+    def _search_failed(self, kind: str, query: str, exc: Exception) -> None:
+        if not self._matches_search(kind, query):
             return
         _clear(self.list)
         code = getattr(exc, "code", "network")

@@ -23,6 +23,7 @@ from PySide6.QtCore import QObject, QThread, Signal
 from tvorka.core.advisor import LlmPlan
 from tvorka.core.attachments import Attachment
 from tvorka.core.chats import (
+    TOOLS_HINT,
     ChatStore,
     Conversation,
     Message,
@@ -30,9 +31,10 @@ from tvorka.core.chats import (
     context_messages,
     default_title,
     request_params,
+    tool_proposals,
 )
 from tvorka.core.llm import runtime
-from tvorka.core.llm.client import LlamaClient, LlmError
+from tvorka.core.llm.client import LlamaClient, LlmError, join_tool_calls
 from tvorka.core.memory import VideoMemory
 
 log = logging.getLogger(__name__)
@@ -209,12 +211,14 @@ class ChatWorker(QThread):
         with self._lock:
             self._client = client
         usage: dict[str, Any] = {}
+        calls: list[dict[str, Any]] = []
         text, reasoning, last = "", "", time.monotonic()
         try:
             for delta in client.chat(request.messages, **request.params):
                 if self._is_cancelled(request.id):
                     client.cancel()
                 usage.update(delta.usage)
+                calls += delta.tool_calls
                 if delta.finish:
                     usage["finish"] = delta.finish  # "length": the answer ran out of room
                 text += delta.content
@@ -225,7 +229,10 @@ class ChatWorker(QThread):
         finally:  # a stopped answer keeps every word already received
             if text or reasoning:
                 self.delta.emit(request.id, text, reasoning)
-        return {key: usage[key] for key in STATS if key in usage}
+        stats = {key: usage[key] for key in STATS if key in usage}
+        if calls:
+            stats["tool_calls"] = join_tool_calls(calls)
+        return stats
 
     def _title(self, request: _Request) -> None:
         prompt = TITLE_PROMPT.format(text=request.title_for[:2000])
@@ -307,7 +314,8 @@ class ChatSession(QObject):
         self.store.save(conv)
         self.listed.emit()
 
-    def send(self, conv: Conversation, launch: Launch, ctx: int, reasoning: bool = False) -> int:
+    def send(self, conv: Conversation, launch: Launch, ctx: int, reasoning: bool = False,
+             tools: bool = False) -> int:
         """Ask for an answer to the conversation as it is; returns how many old messages did not fit.
 
         ``reasoning``: the model can think before answering (``Conversation.thinking`` decides).
@@ -322,7 +330,10 @@ class ChatSession(QObject):
                                              vision=launch.projector is not None)
         self.partial = Message("assistant", model=launch.model_id)
         self.answering, self.loading = conv.id, False
-        self._request = self.worker.submit(launch, messages, request_params(conv, reasoning), title_for)
+        params = request_params(conv, reasoning, tools)
+        if "tools" in params:
+            messages[0] = {"role": "system", "content": messages[0]["content"] + TOOLS_HINT}
+        self._request = self.worker.submit(launch, messages, params, title_for)
         if title_for:
             self._titles[self._request] = conv.id
         self.state_changed.emit()
@@ -350,7 +361,9 @@ class ChatSession(QObject):
 
     def _on_finished(self, request_id: int, stats: dict) -> None:
         if request_id == self._request and self.partial is not None:
-            self.partial.stats = dict(stats)
+            stats = dict(stats)
+            self.partial.tools = tool_proposals(stats.pop("tool_calls", []))
+            self.partial.stats = stats
             self._close(stopped=stats.get("finish") == "length")
 
     def _on_cancelled(self, request_id: int) -> None:
@@ -376,7 +389,8 @@ class ChatSession(QObject):
     def _close(self, stopped: bool) -> None:
         conv, partial = self.get(self.answering), self.partial
         self.answering, self.loading, self.partial, self._request = "", False, None, 0
-        if conv is not None and partial is not None and (partial.content or partial.reasoning):
+        kept = partial is not None and (partial.content or partial.reasoning or partial.tools)
+        if conv is not None and partial is not None and kept:
             partial.stopped = stopped
             conv.messages.append(partial)
             self.save(conv)

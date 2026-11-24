@@ -4,11 +4,14 @@ from __future__ import annotations
 
 import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("pytestqt")
+
+from test_advisor import machine
 
 from tvorka.core.settings import Settings
 from tvorka.gui import theme
@@ -55,6 +58,41 @@ def test_model_change_updates_fields(services: Services, qtbot) -> None:
     assert page.reference_mode.value() == "img2img"
 
 
+def test_model_change_updates_the_fit_banner(services: Services, qtbot, monkeypatch) -> None:
+    services.hardware = machine(8)
+    monkeypatch.setattr(services, "installed", lambda _spec: True)
+    page = ImagePage(services, None)
+    qtbot.addWidget(page)
+    page.model_box.setCurrentIndex(page.model_box.findData("stabilityai/sd-turbo"))
+    before = page.fit_banner.figures.text()
+    page.model_box.setCurrentIndex(page.model_box.findData("Lykon/dreamshaper-8"))
+    assert before and page.fit_banner.figures.text() != before
+
+
+def test_generation_cancel_and_error_restore_the_image_page(services: Services, qtbot, monkeypatch) -> None:
+    jobs, cancelled, toasts = [], [], []
+    monkeypatch.setattr(services, "installed", lambda _spec: True)
+    worker = services.worker
+    monkeypatch.setattr(worker, "submit", jobs.append)
+    monkeypatch.setattr(worker, "cancel", cancelled.append)
+    page = ImagePage(services, None)
+    qtbot.addWidget(page)
+    page.toasts = SimpleNamespace(show=lambda text, level: toasts.append((text, level)))
+    page.prompt.setPlainText("a cat")
+    page.action.click()
+    assert page.canvas._progress == 0 and not page.stop.isHidden()
+    page.stop.click()
+    assert cancelled == [jobs[-1].id]
+    worker.job_cancelled.emit(cancelled[0])
+    assert page.canvas._progress is None and page.stop.isHidden() and page.action.isEnabled()
+
+    page.action.click()
+    worker.job_failed.emit(jobs[-1].id, "not_installed", "")
+    assert toasts == [("Модель ещё не скачана. Скачайте её на странице «Модели».", "bad")]
+    assert page.canvas._progress is None and page.stop.isHidden() and page.action.isEnabled()
+
+
+
 def test_exact_size_shows_the_route(services: Services, qtbot) -> None:
     page = ImagePage(services, None)
     qtbot.addWidget(page)
@@ -64,8 +102,34 @@ def test_exact_size_shows_the_route(services: Services, qtbot) -> None:
     page.exact.set_value(3840, 2160)
     assert page.upscale_field.isVisibleTo(page)
     assert "680 × 384" in page.size_info.text()
+    assert "предел" in page.size_info.text()
+    page.exact.set_value(513, 512)
+    assert "520 × 512" in page.size_info.text() and "Края обрезаются" in page.size_info.text()
     page.exact.set_value(512, 512)
     assert not page.upscale_field.isVisibleTo(page)
+
+
+def test_lora_weights_follow_generation_and_repeat(services, qtbot, monkeypatch, tmp_path):
+    from tvorka.core.jobs import Job
+
+    page = ImagePage(services, None)
+    qtbot.addWidget(page)
+    jobs: list[Job] = []
+    monkeypatch.setattr(services, "installed", lambda _spec: True)
+    monkeypatch.setattr(services.worker, "submit", jobs.append)
+    file = str(tmp_path / "style.safetensors")
+    params = [{"path": file, "weight": 0.65}]
+    page.apply_result({"model_id": "stabilityai/sd-turbo", "prompt": "a cat", "params": {"loras": params}})
+    page.generate()
+    assert jobs[-1].get("loras") == params
+    page.save_state()
+    rebuilt = ImagePage(services, None)
+    qtbot.addWidget(rebuilt)
+    assert rebuilt.loras.values() == params
+    rebuilt.loras._remove(file)
+    rebuilt.generate()
+    assert not jobs[-1].get("loras")
+
 
 
 def test_main_window_navigation(services: Services, qtbot) -> None:

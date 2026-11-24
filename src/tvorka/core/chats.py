@@ -28,7 +28,9 @@ ROLES: dict[str, str] = {
     "image_prompts": (
         "You write prompts for image generation models such as Stable Diffusion and FLUX. Turn the user's "
         "idea into one detailed English prompt: subject, setting, composition, lighting, style, camera or "
-        "medium. Reply with the prompt first, then at most two short alternatives. Explain only if asked."
+        "medium. Reply with the prompt first, then at most two short alternatives unless the user asks "
+        "for a different number. Use a numbered Markdown list, one complete prompt per item, when giving "
+        "multiple prompts. Explain only if asked."
     ),
     "video_director": (
         "You are a video director. Turn the user's idea into short English prompts for a text-to-video "
@@ -64,6 +66,7 @@ class Message:
     stats: dict[str, Any] = field(default_factory=dict)  # tokens per second, token counts
     stopped: bool = False  # the answer was cut short (stopped by the user or an error)
     attachments: list[dict[str, Any]] = field(default_factory=list)  # ``Attachment.to_dict()``
+    tools: list[dict[str, Any]] = field(default_factory=list)  # the model's proposals (``tool_proposals``)
 
     @property
     def files(self) -> list[Attachment]:
@@ -89,6 +92,7 @@ class Conversation:
     system: str = ""  # own instruction for this chat; empty: the role's
     temperature: float | None = None  # None: what the model's authors recommend (stored in the GGUF)
     thinking: bool = False  # let a reasoning model think before answering: better, but much slower
+    tools: bool = True  # a model with tools may propose a picture, a clip or a voice-over
     ctx: int = 0  # tokens the model keeps in mind; 0: the advisor's choice
     created: float = 0.0
     updated: float = 0.0
@@ -118,13 +122,59 @@ class Conversation:
         return conv
 
 
-def request_params(conv: Conversation, reasoning: bool) -> dict[str, Any]:
+# Tools a chat model may propose; nothing runs until the user presses "Create" on the card.
+def _tool(name: str, description: str, field_name: str, field_description: str) -> dict[str, Any]:
+    return {"type": "function", "function": {
+        "name": name, "description": description,
+        "parameters": {"type": "object", "required": [field_name],
+                       "properties": {field_name: {"type": "string", "description": field_description}}}}}
+
+
+TOOLS = [
+    _tool("generate_image", "Create a picture with the local image generator. The user confirms first.",
+          "prompt", "What to draw, in English: the subject, setting, composition, lighting and style."),
+    _tool("generate_video", "Create a short video clip with the local video generator. "
+          "The user confirms first.",
+          "prompt", "One continuous shot, in English: the subject, what moves, the camera, the light."),
+    _tool("speak", "Read a text aloud with the local voice model. The user confirms first.",
+          "text", "The exact text to read, in the user's language."),
+]
+TOOL_FIELD = {"generate_image": "prompt", "generate_video": "prompt", "speak": "text"}
+TOOLS_HINT = (" You can create pictures, video clips and voice-overs with the tools; use them only when the "
+              "user asks for a picture, a video or a voice-over, and write a short reply as well.")
+
+
+def tool_proposals(calls: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Tool calls from the model as cards: ``{"name", "value", "status"}``; a broken call is "invalid"."""
+    out = []
+    for call in calls:
+        field_name = TOOL_FIELD.get(call.get("name", ""))
+        value = (call.get("arguments") or {}).get(field_name) if field_name else None
+        ok = isinstance(value, str) and value.strip()
+        out.append({"name": call.get("name", ""), "value": value.strip() if ok else "",
+                    "status": "proposed" if ok else "invalid", "paths": []})
+    return out
+
+
+def _tool_note(message: Message) -> str:
+    """What the model proposed and what came of it, as text: every chat template accepts that."""
+    done = {"proposed": "waiting for the user", "running": "being created", "done": "created",
+            "declined": "declined by the user", "sent": "handed to the user to edit",
+            "invalid": "invalid call", "failed": "could not be created"}
+    lines = [f"[{tool['name']}: {tool.get('value', '')!r} — {done.get(tool.get('status', ''), '')}]"
+             for tool in message.tools if not tool.get("answer_audio")]
+    return "\n".join(lines)
+
+
+def request_params(conv: Conversation, reasoning: bool, tools: bool = False) -> dict[str, Any]:
     """Sampling settings for the server; whatever is not set stays as the model recommends."""
     params: dict[str, Any] = {}
     if conv.temperature is not None:
         params["temperature"] = conv.temperature
     if reasoning:  # models that think by default, like Qwen3.5, are told whether to
         params["chat_template_kwargs"] = {"enable_thinking": conv.thinking}
+    if tools and not (conv.messages and any(file.text_only for file in conv.messages[-1].files)):
+        params["tools"] = TOOLS
     return params
 
 
@@ -147,6 +197,8 @@ def context_messages(conv: Conversation, ctx: int, folder: Path | None = None,
         if kept and cost > budget:
             break
         content: Any = message.content
+        if message.tools:
+            content = "\n".join(part for part in (content, _tool_note(message)) if part)
         if message.attachments and folder is not None:
             content = message_content(message.content, message.files, folder, with_images=vision)
         kept.append({"role": message.role, "content": content})

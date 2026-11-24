@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import os
 import shutil
+from collections.abc import Callable
 from pathlib import Path
 from typing import Any
 
@@ -24,15 +25,18 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tvorka.core import advisor
+from tvorka.core import advisor, attachments
 from tvorka.core.catalog import ModelSpec
 from tvorka.core.jobs import Job
+from tvorka.core.llm import prompts
+from tvorka.core.llm.prompts import Task
 from tvorka.engines.media import IMAGE_FORMATS
 from tvorka.gui import handoff
 from tvorka.gui.handoff import Asset, Route
 from tvorka.gui.pages.base import Page
 from tvorka.gui.services import Services
 from tvorka.gui.widgets.aspect import AspectPicker, SizeField
+from tvorka.gui.widgets.assist_bar import Action, AssistBar
 from tvorka.gui.widgets.basic import (
     Card,
     Disclosure,
@@ -47,7 +51,7 @@ from tvorka.gui.widgets.canvas import Canvas, FilmStrip
 from tvorka.gui.widgets.dropzone import DropZone
 from tvorka.gui.widgets.feedback import ToastHost
 from tvorka.gui.widgets.fit import FitBanner
-from tvorka.gui.widgets.mic import mic_bar
+from tvorka.gui.widgets.lora import LoraPicker
 from tvorka.i18n import messages, tr
 
 GB = 1024**3
@@ -128,7 +132,8 @@ class ImagePage(Page):
         self.prompt.setAccessibleName(tr("Prompt"))
         self.prompt.textChanged.connect(self._update_action)
         column.addWidget(self.prompt)
-        column.addWidget(mic_bar(self, self.prompt))
+        self.assist = AssistBar(self, self._assist_actions(), self.prompt)
+        column.addWidget(self.assist)
         column.addWidget(label(tr("Tip: most models understand English best."), "faint"))
 
         # model
@@ -208,6 +213,10 @@ class ImagePage(Page):
         advanced.body.addWidget(self.guidance_field)
         advanced.body.addWidget(Field(tr("Seed"), self.seed,
                                       tr("The same seed and settings repeat a picture.")))
+        self.loras = LoraPicker()
+        self.lora_field = Field(tr("LoRA"), self.loras,
+                                tr("Choose adapters made for the selected model family."))
+        advanced.body.addWidget(self.lora_field)
         column.addWidget(advanced)
         column.addStretch(1)
         scroll.setWidget(inner)
@@ -351,6 +360,7 @@ class ImagePage(Page):
             self.guidance.set_value(float(params["guidance"]))
         self.seed.set_value(params.get("seed"))
         self.count.setValue(1)
+        self.loras.set_values(params.get("loras") or [])
         if params.get("format") in IMAGE_FORMATS:
             self.file_format.set_value(params["format"])
         self._size_changed()
@@ -367,6 +377,7 @@ class ImagePage(Page):
             return
         changed = self._spec is None or self._spec.id != spec.id
         self._spec = spec
+        self.lora_field.setVisible(spec.engine == "diffusers")
         self.model_summary.setText(spec.text(self._lang()))
         uses_negative = bool(spec.default("negative", True))
         self.negative_field.setVisible(uses_negative)
@@ -402,11 +413,22 @@ class ImagePage(Page):
             return
         width, height = self._target_size()
         gen_w, gen_h, route = advisor.resolution_route(self._spec, width, height)
+        notes = []
         if route == "upscale":
-            self.size_info.setText(tr("{w} × {h} px — the model draws {gw} × {gh}, then it is enlarged",
-                                      w=width, h=height, gw=gen_w, gh=gen_h))
+            notes.append(tr("{w} × {h} px — the model draws {gw} × {gh}, then it is enlarged",
+                            w=width, h=height, gw=gen_w, gh=gen_h))
+            if self._spec.fixed_size:
+                notes.append(tr("This model generates at a fixed size."))
+            else:
+                notes.append(tr("The requested size exceeds the model's direct generation limit."))
+        elif (gen_w, gen_h) != (width, height):
+            notes.append(tr("{w} × {h} px — the model draws {gw} × {gh}, then adjusts to the requested size",
+                            w=width, h=height, gw=gen_w, gh=gen_h))
         else:
-            self.size_info.setText(tr("{w} × {h} px", w=width, h=height))
+            notes.append(tr("{w} × {h} px", w=width, h=height))
+        if gen_w * height != gen_h * width:
+            notes.append(tr("The edges are cropped to fill the requested proportions."))
+        self.size_info.setText("\n".join(notes))
         self.upscale_field.setVisible(route == "upscale")
         self._refresh_fit()
 
@@ -440,6 +462,7 @@ class ImagePage(Page):
         self._update_action()
 
     def _update_action(self) -> None:
+        self.assist.refresh()
         spec = self._spec
         busy = bool(self._jobs)
         self.stop.setVisible(busy)
@@ -481,7 +504,8 @@ class ImagePage(Page):
 
     def generate(self) -> None:
         spec = self._spec
-        if spec is None or not self.action.isEnabled() or not self.services.installed(spec):
+        if spec is None or not self.action.isEnabled() or not self.services.installed(spec) \
+                or getattr(self, "_translating", False):
             return
         width, height = self._target_size()
         params: dict[str, Any] = {
@@ -492,17 +516,29 @@ class ImagePage(Page):
         }
         if self.negative_field.isVisible():
             params["negative"] = self.negative.toPlainText().strip()
+        if spec.engine == "diffusers" and (loras := self.loras.values()):
+            params["loras"] = loras
         if self.dropzone.path() and self.reference_mode.value():
             params.update(reference=self.dropzone.path(), reference_mode=self.reference_mode.value(),
                           strength=self.strength.value())
         parent = self.parent_for(self.prompt.toPlainText(), self.dropzone.path())
         if parent:
             params["parent"] = parent
-        job = Job("image", spec.id, self.prompt.toPlainText().strip(), params)
-        self._jobs.add(job.id)
         self._remember()
-        self.services.worker.submit(job)
         self.ideas.setVisible(False)
+        self._translating = True
+        if self.in_english(self.prompt.toPlainText().strip(), lambda text, original: self._submit(
+                spec.id, text, original, params)):
+            self.canvas.set_progress(0.0, tr("Translating the prompt into English…"))
+            self._update_action()
+
+    def _submit(self, model_id: str, prompt: str, original: str, params: dict[str, Any]) -> None:
+        self._translating = False
+        if original:
+            params["prompt_original"] = original
+        job = Job("image", model_id, prompt, params)
+        self._jobs.add(job.id)
+        self.services.worker.submit(job)
         self.canvas.set_progress(0.0, tr("Waiting in the queue…"))
         self._update_action()
 
@@ -632,6 +668,60 @@ class ImagePage(Page):
         if self._current_path():
             self.send(self._asset(), "video", "first_frame")
 
+    # ============================================================ the chat model as a helper
+    def _assist_actions(self) -> list[Action]:
+        def prompt() -> str:
+            return self.prompt.toPlainText().strip()
+
+        def style() -> str:
+            return prompts.prompt_style(self._spec)
+
+        def critique() -> Task | None:
+            result = self._last_result
+            if not result:
+                return None
+            picture = attachments.data_url(Path(result["path"]))
+            return prompts.critique(result.get("prompt", ""), picture, style())
+
+        def describe() -> Task | None:
+            reference = self.dropzone.path()
+            if not reference:
+                return None
+            return prompts.prompt_from_image(attachments.data_url(Path(reference)), style())
+
+        def task(make: Callable[..., Task], *extra: str) -> Callable[[], Task | None]:
+            def build() -> Task | None:
+                return make(prompt(), *[style() if e == "style" else e for e in extra]) if prompt() else None
+
+            return build
+
+        return [
+            Action("improve", tr("Improve"),
+                   tr("The chat model rewrites the prompt: more detail, in the wording this model "
+                      "understands best"),
+                   task(prompts.improve_prompt, "style"), self._set_prompt, lambda: bool(prompt()),
+                   title=tr("Improved prompt"), icon="spark"),
+            Action("translate", tr("To English"), tr("Most image models understand English best"),
+                   task(prompts.translate_prompt), self._set_prompt,
+                   lambda: prompts.needs_translation(prompt()), title=tr("Translation")),
+            Action("negative", tr("Negative prompt"), tr("Suggest what must not appear in the picture"),
+                   task(prompts.negative_prompt, "style"), lambda text: self.negative.setPlainText(text),
+                   lambda: bool(prompt()) and not self.negative_field.isHidden(),
+                   title=tr("Negative prompt")),
+            Action("describe", tr("From the picture"),
+                   tr("The chat model describes the reference as a prompt"),
+                   describe, self._set_prompt, lambda: bool(self.dropzone.path()), vision=True,
+                   title=tr("Prompt from the picture")),
+            Action("critique", tr("Check the result"),
+                   tr("The chat model compares the picture with the prompt and suggests a better one"),
+                   critique, self._set_prompt, lambda: self._last_result is not None, vision=True,
+                   parse=prompts.parse_critique, title=tr("Improved prompt")),
+        ]
+
+    def _set_prompt(self, text: str) -> None:
+        self.prompt.setPlainText(text)
+        self.prompt.setFocus()
+
     # ============================================================ handoff (gui/handoff.py)
     def routes(self, asset: Asset) -> list[Route]:
         if asset.kind == "image" and asset.path:
@@ -665,12 +755,14 @@ class ImagePage(Page):
             "image", model=self._spec.id if self._spec else "", prompt=self.prompt.toPlainText(),
             negative=self.negative.toPlainText(), aspect=list(self.aspect.value()),
             scale=self.scale.value(), size_mode=self.size_mode.value(), exact=list(self.exact.value()),
-            format=self.file_format.value(), count=self.count.value(), upscale=self.upscale_mode.value())
+            format=self.file_format.value(), count=self.count.value(), upscale=self.upscale_mode.value(),
+            loras=self.loras.values())
 
     def _restore(self) -> None:
         recall = self.services.settings.recall
         self.prompt.setPlainText(recall("image", "prompt", ""))
         self.negative.setPlainText(recall("image", "negative", ""))
+        self.loras.set_values(recall("image", "loras", []))
         aspect = recall("image", "aspect")
         if aspect:
             self.aspect.set_value(*aspect)

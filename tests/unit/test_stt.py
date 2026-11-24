@@ -6,6 +6,7 @@ import os
 import wave
 from concurrent.futures import Future
 from pathlib import Path
+from types import SimpleNamespace
 from typing import ClassVar
 
 import numpy as np
@@ -41,6 +42,20 @@ def test_speech_is_read_at_16_khz(tmp_path: Path) -> None:
     assert error.value.code == "unreadable"
 
 
+@pytest.mark.parametrize("name, dtype, value", [
+    ("UInt8", np.uint8, 192), ("Int16", np.int16, -16384),
+    ("Int32", np.int32, 1 << 30), ("Float", np.float32, 0.5),
+])
+def test_microphone_peak_is_measured_on_the_samples_written_to_wav(name, dtype, value) -> None:
+    from PySide6.QtMultimedia import QAudioFormat
+
+    from tvorka.gui.widgets.mic import _pcm16
+
+    samples, level = _pcm16(np.array([value], dtype=dtype).tobytes(),
+                            getattr(QAudioFormat.SampleFormat, name))
+    assert level == 50 and abs(int(np.frombuffer(samples, dtype="<i2")[0])) >= 16383
+
+
 def test_silence_is_not_sent_to_the_model(tmp_path: Path) -> None:
     calls = []
     engine = WhisperEngine(tmp_path, "cpu")
@@ -50,6 +65,21 @@ def test_silence_is_not_sent_to_the_model(tmp_path: Path) -> None:
     assert engine.transcribe(write_wav(tmp_path / "tone.wav", 2.0)) == "привет, мир"
     audio, options = calls[0]
     assert audio["sampling_rate"] == RATE and options["chunk_length_s"] == 30  # long recordings in parts
+
+
+@pytest.mark.parametrize(("multilingual", "kwargs"), [(False, {}), (True, {"task": "transcribe"})])
+def test_task_option_matches_whisper_generation_config(tmp_path: Path, multilingual, kwargs) -> None:
+    engine = WhisperEngine(tmp_path, "cpu")
+    options = []
+
+    def pipe(_audio, **received):
+        options.append(received)
+        return {"text": "Hello"}
+
+    pipe.model = SimpleNamespace(generation_config=SimpleNamespace(is_multilingual=multilingual))
+    engine.pipe = pipe
+    assert engine.transcribe(write_wav(tmp_path / "tone.wav")) == "Hello"
+    assert options[0]["generate_kwargs"] == kwargs
 
 
 # ------------------------------------------------------------------ worker
@@ -162,9 +192,11 @@ class FakeRecorder:
         class Signals(QObject):
             stopped = Signal(str)
             error = Signal(str)
+            level = Signal(int)
 
         self._signals = Signals()
         self.stopped, self.error = self._signals.stopped, self._signals.error
+        self.level = self._signals.level
         self.file: Path | None = None
 
     def record(self, file: Path) -> None:
@@ -224,7 +256,9 @@ def test_dictation_lands_in_the_text_field(page, qtbot, monkeypatch: pytest.Monk
     mic = MicButton(page, page.text)
     mic.recorder = FakeRecorder()
     mic.click()
-    assert mic.state == "recording" and mic.text() == "0:00"
+    assert mic.state == "recording" and mic.text() == "0:00  ▱▱▱▱▱"
+    mic.recorder.level.emit(80)
+    assert mic.text().endswith("▰▰▰▰▱")
     mic.click()  # stop: the recording goes to recognition
     assert mic.state == "listening" and heard and heard[0].is_file()
     page.services.stt.transcribed.emit(7, "и ещё маяк")

@@ -24,6 +24,7 @@ KIND_BY_TAG = {
     "text-to-image": "image", "image-to-image": "image",
     "text-to-video": "video", "image-to-video": "video",
     "text-to-speech": "speech", "text-to-audio": "speech",
+    "automatic-speech-recognition": "transcribe",
 }
 TTS_MODEL_TYPES = ("vits", "bark")
 
@@ -184,6 +185,8 @@ def _search(kind: str, query: str, limit: int, token: str | None) -> list[HubHit
         requests = [("text-generation", "gguf"), ("image-text-to-text", "gguf")]
     elif kind == "speech":
         requests = [("text-to-speech", "vits"), ("text-to-speech", "bark")]
+    elif kind == "transcribe":
+        requests = [("automatic-speech-recognition", ["transformers", "whisper"])]
     elif kind == "video":
         requests = [("text-to-video", "diffusers"), ("image-to-video", "diffusers")]
     else:
@@ -296,6 +299,9 @@ def spec_from_repo(
     else:
         config = _read_json(repo_id, "config.json", token, cache_dir)
         model_type = str(config.get("model_type", ""))
+        if model_type == "whisper":
+            fill_whisper_spec(spec, plan)
+            return spec
         if model_type not in TTS_MODEL_TYPES:
             raise HubError("unsupported", f"{repo_id} ({model_type or info.library_name or '?'})")
         spec.kind, spec.engine = "speech", "transformers_tts"
@@ -306,6 +312,30 @@ def spec_from_repo(
     if not spec.memory:
         raise HubError("unsupported", repo_id)
     return spec
+
+
+def fill_whisper_spec(spec: ModelSpec, plan: DownloadPlan) -> None:
+    """Check that a Transformers Whisper snapshot has its model and processor files."""
+    files = set(plan.files)
+    processor = {"config.json", "preprocessor_config.json"} <= files
+    tokenizer = "tokenizer.json" in files or {"vocab.json", "merges.txt"} <= files
+    weights = any(
+        plan.sizes[name] > 0 and (
+            name in {"model.safetensors", "pytorch_model.bin"}
+            or (name.startswith("model-") and name.endswith(".safetensors")
+                and "model.safetensors.index.json" in files)
+            or (name.startswith("pytorch_model-") and name.endswith(".bin")
+                and "pytorch_model.bin.index.json" in files)
+        )
+        for name in files
+    )
+    if not (processor and tokenizer and weights):
+        raise HubError("unsupported", spec.id)
+    size_gb = plan.components["model"] / GB
+    spec.kind, spec.engine = "transcribe", "whisper"
+    spec.memory = {"model": max(round(size_gb, 2), 0.01)}
+    spec.download_gb = round(plan.total_bytes / GB, 2)
+    spec.act_gb = 0.2 if size_gb < 0.5 else (0.3 if size_gb < 1 else 0.4)
 
 
 # ------------------------------------------------------------------ chat models (GGUF)
