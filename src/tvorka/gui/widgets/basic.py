@@ -159,6 +159,10 @@ class Segmented(QFrame):
         if button is not None:
             button.setChecked(True)
 
+    def set_option_enabled(self, value: str, enabled: bool) -> None:
+        if button := self._buttons.get(value):
+            button.setEnabled(enabled)
+
 
 class SliderField(QWidget):
     """Slider plus an exact numeric box; both stay in sync."""

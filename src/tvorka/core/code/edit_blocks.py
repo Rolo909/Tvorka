@@ -2,9 +2,17 @@
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
+from pathlib import PurePosixPath
 
 from tvorka.core.code.workspace import WorkspaceError
+
+_FENCE = re.compile(r"^```([^\r\n`]*)\r?\n(.*?)^```[ \t]*$", re.M | re.S)
+_FILENAMES = {"python": "main.py", "py": "main.py", "html": "index.html", "css": "style.css",
+              "js": "script.js", "javascript": "script.js", "typescript": "script.ts",
+              "json": "data.json", "markdown": "README.md"}
+_NAME = re.compile(r"(?:[\w.-]+/)*[\w-][\w.-]*\.[A-Za-z0-9]{1,12}")
 
 
 @dataclass(frozen=True)
@@ -42,3 +50,21 @@ def parse_blocks(text: str) -> list[EditBlock]:
     if state != "path":
         raise WorkspaceError("bad_block", str(len(lines)))
     return blocks
+
+
+def code_files(text: str) -> dict[str, str]:
+    """Use ordinary HTML/CSS/JS names when a fenced example omits filenames."""
+    files: dict[str, str] = {}
+    used: set[str] = set()
+    for index, (hint, content) in enumerate(_FENCE.findall(text), 1):
+        words = hint.split()
+        names = (word.removeprefix("filename=").strip("\"'") for word in words)
+        filename = next((name for name in names if _NAME.fullmatch(name) and ".." not in name.split("/")), "")
+        path = PurePosixPath(filename or _FILENAMES.get(words[0].lower() if words else "", "snippet.txt"))
+        root = path
+        while path.as_posix().casefold() in used:
+            path = root.with_stem(f"{root.stem}-{index}")
+            index += 1
+        used.add(path.as_posix().casefold())
+        files[path.as_posix()] = content
+    return files

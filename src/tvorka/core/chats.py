@@ -18,6 +18,7 @@ from pathlib import Path
 from typing import Any
 
 from tvorka.core.attachments import Attachment, message_content
+from tvorka.core.llm.tools import Tool, openai_schema
 
 log = logging.getLogger(__name__)
 
@@ -123,14 +124,12 @@ class Conversation:
 
 
 # Tools a chat model may propose; nothing runs until the user presses "Create" on the card.
-def _tool(name: str, description: str, field_name: str, field_description: str) -> dict[str, Any]:
-    return {"type": "function", "function": {
-        "name": name, "description": description,
-        "parameters": {"type": "object", "required": [field_name],
-                       "properties": {field_name: {"type": "string", "description": field_description}}}}}
+def _tool(name: str, description: str, field_name: str, field_description: str) -> Tool:
+    return Tool(name, description, {field_name: {"type": "string", "description": field_description}},
+                (field_name,))
 
 
-TOOLS = [
+TOOLS = openai_schema([
     _tool("generate_image", "Create a picture with the local image generator. The user confirms first.",
           "prompt", "What to draw, in English: the subject, setting, composition, lighting and style."),
     _tool("generate_video", "Create a short video clip with the local video generator. "
@@ -138,7 +137,7 @@ TOOLS = [
           "prompt", "One continuous shot, in English: the subject, what moves, the camera, the light."),
     _tool("speak", "Read a text aloud with the local voice model. The user confirms first.",
           "text", "The exact text to read, in the user's language."),
-]
+])
 TOOL_FIELD = {"generate_image": "prompt", "generate_video": "prompt", "speak": "text"}
 TOOLS_HINT = (" You can create pictures, video clips and voice-overs with the tools; use them only when the "
               "user asks for a picture, a video or a voice-over, and write a short reply as well.")

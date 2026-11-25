@@ -7,6 +7,7 @@ import os
 import tempfile
 import time
 import wave
+from concurrent.futures import Future
 from pathlib import Path
 from typing import Any
 
@@ -158,6 +159,7 @@ class MicButton(QToolButton):
         self._wired: Any = None  # the recorder whose signals are connected
         self._started = 0.0
         self._request = 0
+        self._future: Future[str] | None = None
         self._file: Path | None = None
         self._level = 0
         self._timer = QTimer(self)
@@ -233,6 +235,18 @@ class MicButton(QToolButton):
             self.setText(tr("Recognizing…"))
             self.recorder.stop()
 
+    def discard(self) -> None:
+        """Release a transient input's recording when its dialog closes."""
+        recording = self.state == "recording"
+        self._timer.stop()
+        self._show("idle")
+        if recording:
+            self.recorder.stop()
+        if self._future is not None and self._file is not None:
+            path, self._file = self._file, None
+            self._future.add_done_callback(lambda _done: path.unlink(missing_ok=True))
+        self._finish()
+
     def _tick(self) -> None:
         seconds = int(time.monotonic() - self._started)
         blocks = round(self._level / 20)
@@ -246,11 +260,13 @@ class MicButton(QToolButton):
             self._tick()
 
     def _recorded(self, path: str) -> None:
+        if self.state == "idle":
+            return
         started = self.page.services.transcribe(Path(path))
         if started is None:
             self._finish()
             return
-        self._request, _future = started
+        self._request, self._future = started
 
     def _record_error(self, text: str) -> None:
         log.warning("recording failed: %s", text)
@@ -278,6 +294,7 @@ class MicButton(QToolButton):
 
     def _finish(self) -> None:
         self._request = 0
+        self._future = None
         if self._file is not None:
             self._file.unlink(missing_ok=True)
             self._file = None

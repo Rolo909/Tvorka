@@ -25,6 +25,7 @@ class Job:
     prompt: str
     params: dict[str, Any] = field(default_factory=dict)
     id: int = field(default_factory=lambda: next(_counter))
+    preview_dir: Path | None = None  # private staging for a caller that publishes its own result
 
     def get(self, key: str, default: Any = None) -> Any:
         return self.params.get(key, default)

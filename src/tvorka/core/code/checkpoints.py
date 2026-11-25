@@ -7,7 +7,7 @@ import json
 import tempfile
 from pathlib import Path
 
-from tvorka.core.code.workspace import Change, Workspace, WorkspaceError
+from tvorka.core.code.workspace import MAX_FILE_BYTES, Change, Workspace, WorkspaceError
 
 
 def _pack(data: bytes | None) -> str | None:
@@ -30,12 +30,17 @@ class Checkpoints:
                       key=lambda p: int(p.stem))
 
     def apply(self, change: Change) -> int:
-        replacement = change.replacement_bytes()
+        return self.apply_bytes(change.path, change.before_bytes, change.replacement_bytes())
+
+    def apply_bytes(self, path: str, before: bytes | None, replacement: bytes | None) -> int:
+        self.workspace.resolve(path)
+        if replacement is not None and len(replacement) > MAX_FILE_BYTES:
+            raise WorkspaceError("too_large", path)
         records = self._records()
         number = int(records[-1].stem) + 1 if records else 1
         self.folder.mkdir(parents=True, exist_ok=True)
         file = self.folder / f"{number}.json"
-        data = {"path": change.path, "before": _pack(change.before_bytes), "after": _pack(replacement)}
+        data = {"path": path, "before": _pack(before), "after": _pack(replacement)}
         with tempfile.NamedTemporaryFile(mode="w", encoding="utf-8", dir=self.folder, delete=False) as handle:
             pending = Path(handle.name)
             try:
@@ -45,11 +50,15 @@ class Checkpoints:
             finally:
                 pending.unlink(missing_ok=True)
         try:
-            self.workspace.replace_bytes(change.path, change.before_bytes, replacement)
+            self.workspace.replace_bytes(path, before, replacement)
         except (WorkspaceError, OSError):
             file.unlink()
             raise
         return number
+
+    def steps(self) -> list[tuple[int, str, float]]:
+        return [(int(file.stem), json.loads(file.read_text(encoding="utf-8"))["path"], file.stat().st_mtime)
+                for file in reversed(self._records())]
 
     def _undo(self, file: Path) -> None:
         data = json.loads(file.read_text(encoding="utf-8"))

@@ -128,6 +128,23 @@ def plan_named(siblings: list[tuple[str, int]], names: list[str]) -> DownloadPla
     return plan
 
 
+def plan_gguf_base(siblings: list[tuple[str, int]], encoder: str) -> DownloadPlan:
+    """Keep the base configuration and safe weights for components other than the denoiser."""
+    components = {"vae", encoder}
+    if encoder == "text_encoder_2":
+        components.add("text_encoder")
+    plan = plan_files([
+        (name, size) for name, size in siblings
+        if name.lower().endswith((".json", ".txt", ".model", ".tiktoken"))
+        or (name.lower().endswith(".safetensors") and PurePosixPath(name).parts[0] in components)
+        if not name.startswith("transformer/") or name == "transformer/config.json"
+    ], prefer_half=True)
+    required = {"model_index.json", "transformer/config.json", f"{encoder}/config.json", "vae/config.json"}
+    if not required.issubset(plan.files) or not components.issubset(plan.components):
+        raise HubError("not_found", "GGUF base is missing Diffusers configs or component safetensors")
+    return plan
+
+
 def _api(token: str | None) -> Any:
     from huggingface_hub import HfApi
 
@@ -146,11 +163,13 @@ def is_network_error(exc: BaseException) -> bool:
     return isinstance(exc, urllib.error.URLError) and not isinstance(exc, urllib.error.HTTPError)
 
 
-def repo_siblings(repo_id: str, token: str | None = None) -> tuple[Any, list[tuple[str, int]]]:
+def repo_siblings(repo_id: str, token: str | None = None,
+                  revision: str = "") -> tuple[Any, list[tuple[str, int]]]:
     from huggingface_hub.errors import GatedRepoError, HfHubHTTPError, RepositoryNotFoundError
 
     try:
-        info = _api(token).model_info(repo_id, files_metadata=True)
+        options = {"revision": revision} if revision else {}
+        info = _api(token).model_info(repo_id, files_metadata=True, **options)
     except GatedRepoError as exc:
         raise HubError("gated", repo_id) from exc
     except RepositoryNotFoundError as exc:

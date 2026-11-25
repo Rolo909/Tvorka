@@ -5,8 +5,11 @@ from __future__ import annotations
 import logging
 import queue
 import threading
+import time
 from collections.abc import Callable
-from dataclasses import asdict
+from dataclasses import asdict, replace
+from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Any
 
 from PySide6.QtCore import QThread, Signal
@@ -15,10 +18,12 @@ from tvorka.core import advisor
 from tvorka.core.advisor import Plan
 from tvorka.core.catalog import Catalog
 from tvorka.core.hardware import Hardware
-from tvorka.core.jobs import History, Job
+from tvorka.core.jobs import History, Job, Result, output_file
 from tvorka.core.memory import VideoMemory
 from tvorka.core.settings import Settings
 from tvorka.core.store import ModelStore
+from tvorka.core.storyboard import Scene
+from tvorka.engines import media
 from tvorka.engines.base import (
     Cancelled,
     Context,
@@ -147,21 +152,15 @@ class GenerationWorker(QThread):
             self.job_cancelled.emit(job.id)
             return
         self.job_started.emit(job.id)
+        settings = (replace(self._settings, output_dir=str(job.preview_dir))
+                    if job.preview_dir is not None and job.get("preview") else self._settings)
         ctx = Context(
-            self._settings, self._store,
+            settings, self._store,
             lambda fraction, stage: self.job_progress.emit(job.id, fraction, stage),
             lambda: self._is_cancelled(job.id),
         )
         try:
-            spec = self._catalog.get(job.model_id)
-            if spec is None:
-                raise EngineError("model_missing", job.model_id)
-            plan, vram_gb = self._plan(spec, job)
-            if self._memory is not None and not self._memory.claim(
-                    "generation", spec.id, vram_gb, lambda: self._is_cancelled(job.id)):
-                raise Cancelled
-            with self._busy:
-                results = self._attempt(spec, plan, job, ctx)
+            results = self._storyboard(job, ctx) if job.get("storyboard") else self._generate(job, ctx)
             if not job.get("preview"):  # voice samples and other previews stay out of the gallery
                 for result in results:
                     self._history.add(result)
@@ -181,6 +180,85 @@ class GenerationWorker(QThread):
         finally:
             if not self._settings.keep_model_loaded:
                 self._drop_engine()
+
+    def _generate(self, job: Job, ctx: Context) -> list[Result]:
+        ctx.check()
+        spec = self._catalog.get(job.model_id)
+        if spec is None:
+            raise EngineError("model_missing", job.model_id)
+        plan, vram_gb = self._plan(spec, job)
+        if self._memory is not None and not self._memory.claim(
+                "generation", spec.id, vram_gb, lambda: ctx.cancelled):
+            raise Cancelled
+        with self._busy:
+            return self._attempt(spec, plan, job, ctx)
+
+    def _storyboard(self, job: Job, ctx: Context) -> list[Result]:
+        started = time.perf_counter()
+        scenes = [Scene(**row) for row in job.get("storyboard")]
+        video = self._catalog.get(job.model_id)
+        if video is None:
+            raise EngineError("model_missing", job.model_id)
+        if "i2v" not in video.reference:
+            raise EngineError("reference_unsupported", video.name)
+        image_model = self._catalog.get(job.get("image_model"))
+        speech_model = self._catalog.get(job.get("speech_model"))
+        if image_model is None or speech_model is None:
+            raise EngineError("model_missing")
+        if any(spec.source == "online" for spec in (image_model, video, speech_model)):
+            raise EngineError("unsupported")
+        width, height = (side // 2 * 2 for side in video.native)
+        total_steps = len(scenes) * 3 + 1
+        step = 0
+        root = ctx.settings.output_path()
+        root.mkdir(parents=True, exist_ok=True)
+        # All media stay on the same volume as the final MP4 for atomic publication.
+        with TemporaryDirectory(prefix=".tvorka-storyboard-", dir=root) as temporary:
+            folder = Path(temporary)
+            settings = replace(ctx.settings, output_dir=temporary)
+
+            def generate(part: Job) -> Path:
+                nonlocal step
+                part.params["preview"] = True
+                local = Context(settings, ctx.store,
+                                lambda fraction, stage: ctx.progress((step + fraction) / total_steps, stage),
+                                lambda: ctx.cancelled)
+                [result] = self._generate(part, local)
+                step += 1
+                return Path(result.path)
+
+            images = [generate(Job("image", image_model.id, scene.image, {
+                "format": "png", "count": 1, "guidance": image_model.default("guidance", 0.0),
+            })) for scene in scenes]
+            videos = [generate(Job("video", video.id, scene.motion, {
+                "format": "mp4", "width": width, "height": height, "reference": str(image),
+                "reference_mode": "i2v", "guidance": video.default("guidance", 5.0),
+            })) for scene, image in zip(scenes, images, strict=True)]
+            voice = next((entry["id"] for entry in speech_model.voices
+                          if entry["id"].startswith(f"v2/{job.get('narration_language')}_")), None)
+            speech_params = {"format": "wav", "voice": voice}
+            voices = [generate(Job("speech", speech_model.id, scene.narration, dict(speech_params)))
+                      for scene in scenes]
+            ctx.progress(step / total_steps, "encode")
+            movie, poster = folder / "movie.mp4", folder / "poster.jpg"
+            clips = list(zip(videos, voices, strict=True))
+            duration = media.join_scenes(clips, movie, width, height, ctx.check)
+            thumbnail = media.video_frame(videos[0], 0)
+            thumbnail.thumbnail((640, 640))
+            thumbnail.save(poster, quality=85)
+            ctx.check()
+            target = output_file(root, "video", "mp4")
+            thumb = target.with_suffix(".jpg")
+            poster.replace(thumb)
+            try:
+                movie.replace(target)
+            except OSError:
+                thumb.unlink(missing_ok=True)
+                raise
+            ctx.progress(1.0, "save")
+        return [Result.make(job, target, video.name, time.perf_counter() - started, str(thumb),
+                            width=width, height=height, fps=media.STORYBOARD_FPS,
+                            duration=round(duration, 2))]
 
     def _plan(self, spec: Any, job: Job) -> tuple[Plan, float]:
         """The memory plan for the job and the video memory it needs."""
@@ -209,7 +287,8 @@ class GenerationWorker(QThread):
                 engine = self._ensure_engine(spec, plan, ctx)
                 return engine.generate(job, ctx)
             except Exception as exc:
-                lower = plan.downgraded()
+                # Sequential offload was not validated for packed GGUF and NF4 parameters.
+                lower = plan.downgraded() if spec.gguf_transformer is None else None
                 if not is_oom(exc) or lower is None:
                     raise
                 log.warning("out of memory in mode %s, retrying as %s", plan.mode, lower.mode)

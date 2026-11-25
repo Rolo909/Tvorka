@@ -34,6 +34,7 @@ class GpuInfo:
     driver: str = ""
     flavor: str = ""  # PyTorch build (pyproject extra) for an AMD / Intel GPU; "" = not supported
     integrated: bool = False  # shares system RAM
+    cuda_capability: tuple[int, int] | None = None
 
     @property
     def supported(self) -> bool:
@@ -268,9 +269,13 @@ def _nvidia_gpus() -> list[GpuInfo]:
             for i in range(pynvml.nvmlDeviceGetCount()):
                 handle = pynvml.nvmlDeviceGetHandleByIndex(i)
                 mem = pynvml.nvmlDeviceGetMemoryInfo(handle)
+                try:
+                    capability = pynvml.nvmlDeviceGetCudaComputeCapability(handle)
+                except (AttributeError, pynvml.NVMLError):
+                    capability = None
                 out.append(
                     GpuInfo(_s(pynvml.nvmlDeviceGetName(handle)), "nvidia",
-                            mem.total / GB, mem.free / GB, driver)
+                            mem.total / GB, mem.free / GB, driver, cuda_capability=capability)
                 )
             return out
         finally:

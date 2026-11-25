@@ -47,6 +47,7 @@ class DiffusersImageEngine(DiffusersEngine):
         kwargs: dict[str, Any] = {
             "prompt": job.prompt, "negative_prompt": negative, "width": width, "height": height,
             "num_inference_steps": steps, "guidance_scale": float(job.get("guidance", 0.0)),
+            "max_sequence_length": spec.default("max_sequence_length"),
         }
         ref_image = None
         if reference:

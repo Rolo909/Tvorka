@@ -60,6 +60,8 @@ class Assistant(QObject):
             on_failed("no_vision" if vision and self.model() is not None else "no_chat_model")
             return 0
         params = {"max_tokens": task.max_tokens, "temperature": 0.3, **NO_THINKING}
+        if task.response_format is not None:
+            params["response_format"] = task.response_format
         request = self.services.chat_worker.submit(launch, task.messages, params)
         self._pending[request] = ([], on_done, on_failed)
         return request

@@ -61,6 +61,11 @@ def _chat() -> QPainterPath:  # speech bubble
     return _join(_rect(3, 3.5, 14, 10, 3), _p((6.5, 13.5), (5.5, 17), (10, 13.5)))
 
 
+def _code() -> QPainterPath:
+    return _join(_p((6.5, 6), (2.5, 10), (6.5, 14)), _p((13.5, 6), (17.5, 10), (13.5, 14)),
+                 _p((11.5, 4.5), (8.5, 15.5)))
+
+
 def _edit() -> QPainterPath:  # pencil
     return _join(_p((4, 16), (4.6, 12.6), (13, 4.2), (15.8, 7), (7.4, 15.4), (4, 16)),
                  _p((11, 6.2), (13.8, 9)))
@@ -191,7 +196,8 @@ def _lock() -> QPainterPath:
 
 
 GLYPHS: dict[str, Callable[[], QPainterPath]] = {
-    "image": _image, "video": _video, "voice": _voice, "chat": _chat, "models": _models, "gallery": _gallery,
+    "image": _image, "video": _video, "voice": _voice, "chat": _chat, "code": _code,
+    "models": _models, "gallery": _gallery,
     "settings": _settings, "download": _download, "trash": _trash, "folder": _folder,
     "check": _check, "close": _close, "play": _play, "pause": _pause, "stop": _stop, "copy": _copy,
     "refresh": _refresh, "plus": _plus, "search": _search, "dice": _dice, "link": _link,

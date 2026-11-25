@@ -29,10 +29,14 @@ Tvorka запускает открытые ИИ-модели у вас на ко
 - **Изображения** по описанию или по картинке-референсу (IP-Adapter), с LoRA. Размер до 4K и больше:
   если модель не умеет такой размер, Tvorka создаст картинку поменьше и аккуратно увеличит её (Real-ESRGAN).
 - **Видео**: короткие ролики по описанию или «оживление» картинки (CogVideoX, Wan, LTX-Video).
+- **GGUF для изображений и видео.** В CUDA-сборке доступны FLUX.1 schnell GGUF и Wan 2.1 T2V 1.3B GGUF.
+  Tvorka квантует текстовый энкодер в NF4 и по очереди размещает компоненты в видеопамяти.
 - **Озвучка**: естественная речь из текста на русском и английском (Silero, MMS, Bark). Числа, даты и
   сокращения читаются словами.
 - **Локальный чат** с моделями GGUF, вложениями и диктовкой через Whisper. Из ответа можно передать
   промпт на генерацию изображения или видео и озвучить текст прямо в чате.
+- **Код**: откройте папку проекта или начните с шаблона. Локальная модель читает файлы, отвечает на вопросы
+  и предлагает правки. В интерфейсе видны diff, подтверждения команд и история для отката изменений.
 - **Подбор под ваш компьютер.** Tvorka заранее говорит, как модель пойдёт на вашей видеокарте
   («отлично», «медленно», «не хватит памяти»), и сам выбирает режим: целиком в видеопамяти, с выгрузкой
   в оперативную память или по частям. Модели, которые больше видеопамяти, всё равно запускаются.
@@ -197,10 +201,14 @@ and the models: your ideas, texts and results never leave your machine. No subsc
 - **Images** from a description or a reference picture (IP-Adapter), with LoRA. Up to 4K and beyond:
   when a model can't render that size, Tvorka renders smaller and upscales carefully (Real-ESRGAN).
 - **Video**: short clips from a description, or bring a picture to life (CogVideoX, Wan, LTX-Video).
+- **GGUF for image and video.** The CUDA build offers FLUX.1 schnell GGUF and Wan 2.1 T2V 1.3B GGUF.
+  Tvorka quantizes the text encoder to NF4 and moves model components into video memory one at a time.
 - **Voice-over**: natural speech from Russian and English text (Silero, MMS, Bark). Numbers, dates and
   abbreviations are read as words.
 - **Local chat** with GGUF models, attachments, and Whisper dictation. Send a prompt from an answer to
   image or video generation, or listen to the answer in the chat.
+- **Code**: open a project folder or start from a template. A local model can read files, answer questions,
+  and propose edits. Review diffs, approve shell commands, and revert changes in the workspace.
 - **Fitted to your computer.** Tvorka tells you up front how a model will run on your graphics card
   ("great", "slow", "not enough memory") and picks the mode by itself: fully in video memory, offloaded to
   RAM, or streamed piece by piece. Models larger than your video memory still run.

@@ -61,6 +61,12 @@ class Handler(BaseHTTPRequestHandler):
         pieces: list[dict[str, str]] = [{"reasoning_content": "Thinking"}]
         pieces += [{"content": w} for w in ("Hello", ", ", "world")]
         delay, finish = 0.0, "stop"
+        if response_format := body.get("response_format"):
+            count = response_format["schema"]["properties"]["scenes"]["minItems"]
+            result = {"scenes": [{"image": f"image {n}", "motion": f"motion {n}", "narration": f"voice {n}"}
+                                 for n in range(1, count + 1)]}
+            answer = json.dumps(result)
+            pieces = [{"content": answer[:30]}, {"content": answer[30:]}]
         if prompt == "slow":
             pieces, delay = [{"content": "x"}] * 2000, 0.01
         if body.get("tools") and isinstance(prompt, str) and prompt.startswith("draw"):
@@ -72,6 +78,9 @@ class Handler(BaseHTTPRequestHandler):
             pieces += [{"tool_calls": [{"index": 0, "function": {"arguments": arguments[i:i + 7]}}]}
                        for i in range(0, len(arguments), 7)]
             finish = "tool_calls"
+        system = body["messages"][0].get("content", "")
+        if isinstance(system, str) and system.startswith("You help the user with a small local coding"):
+            pieces, finish = _code_pieces(body["messages"], bool(body.get("tools")))
         for piece in pieces:
             self._event({"choices": [{"index": 0, "delta": piece, "finish_reason": None}]})
             time.sleep(delay)
@@ -95,6 +104,31 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
+
+
+def _code_pieces(messages: list[dict[str, Any]], tools: bool) -> tuple[list[dict[str, Any]], str]:
+    if not tools:
+        text = ("main.py\n<<<<<<< SEARCH\nprint('before')\n=======\n"
+                "print('after')\n>>>>>>> REPLACE\n")
+        return [{"content": text[:20]}, {"content": text[20:]}], "stop"
+    steps = [
+        ("read_file", {"path": "main.py"}),
+        ("edit_file", {"path": "main.py", "old_text": "'before'", "new_text": "'after'"}),
+        ("run_command", {"command": "echo verified", "timeout_s": 5}),
+        ("finish", {"summary": "Completed the task"}),
+    ]
+    if any(message["role"] == "user" and str(message["content"]).startswith("Create a local project image")
+           for message in messages):
+        steps = [("generate_image", {"prompt": "A simple blue square", "path": "assets/icon.png",
+                                     "width": 64, "height": 64}),
+                 ("finish", {"summary": "Created the project image"})]
+    position = sum(message["role"] == "tool" for message in messages)
+    tool, args = steps[position]
+    data = json.dumps(args)
+    pieces = [{"tool_calls": [{"index": 0, "id": f"code_{position}", "type": "function",
+                              "function": {"name": tool, "arguments": data[:8]}}]},
+              {"tool_calls": [{"index": 0, "function": {"arguments": data[8:]}}]}]
+    return pieces, "tool_calls"
 
 
 def serve(port: int = 0, api_key: str = "", load_seconds: float = 0.0) -> StubServer:

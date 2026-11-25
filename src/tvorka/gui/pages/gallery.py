@@ -24,6 +24,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tvorka.core.chats import Conversation
 from tvorka.core.jobs import Result
 from tvorka.gui import handoff, icons, theme
 from tvorka.gui.pages.base import Page
@@ -313,16 +314,22 @@ class GalleryPage(Page):
         self.detail_params.setText("   ".join(facts))
         self.repeat.setVisible(work.kind == "image" and self.services.catalog.get(work.model_id) is not None)
         parent = self._parent_of(work)
+        storyboard = bool(work.params.get("storyboard"))
+        chat_source = str(work.params.get("parent", "")).startswith("chat:")
         if parent is not None:
             text = tr("Made from: {kind} “{prompt}”", kind=kind_name(parent.kind).lower(),
                       prompt=parent.prompt or "—")
             metrics = self.lineage.fontMetrics()
             self.lineage.setText(metrics.elidedText(text, Qt.TextElideMode.ElideRight, 296))
             self.lineage.setToolTip(text)
-        elif str(work.params.get("parent", "")).startswith("chat:"):
+        elif storyboard:
+            self.lineage.setText(tr("Made from an idea in Chat"))
+            self.lineage.setToolTip("")
+        elif chat_source:
             self.lineage.setText(tr("Made from a chat answer"))
-        self.lineage.setVisible(parent is not None or str(work.params.get("parent", "")).startswith("chat:"))
-        self.lineage.setEnabled(parent is not None)
+            self.lineage.setToolTip("")
+        self.lineage.setVisible(parent is not None or storyboard or chat_source)
+        self.lineage.setEnabled(parent is not None or (storyboard and self._source_chat(work) is not None))
 
     # ============================================================ actions
     def _activated(self, _item: QListWidgetItem) -> None:
@@ -347,11 +354,19 @@ class GalleryPage(Page):
         parent = str(work.params.get("parent") or "")
         return next((r for r in self.services.history.items() if r.id == parent), None) if parent else None
 
+    def _source_chat(self, work: Result) -> Conversation | None:
+        parent = str(work.params.get("parent") or "")
+        return self.services.chat.get(parent.removeprefix("chat:")) if parent.startswith("chat:") else None
+
     def _show_parent(self) -> None:
         """Lineage: jump to the work this one was made from."""
         work = self._current()
         parent = self._parent_of(work) if work else None
         if parent is None:
+            if work and work.params.get("storyboard") and (chat := self._source_chat(work)) is not None:
+                page = self._go_to("chat")
+                if page is not None:
+                    page.open_chat(chat)
             return
         if parent.id not in self._items:  # hidden by the kind filter
             self.kind.set_value("")

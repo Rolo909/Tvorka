@@ -150,6 +150,9 @@ def assess(
         notes.append(("disk", {"need": spec.download_gb, "have": disk_free_gb}))
         return Fit(NO, Plan(device, "cpu", dtype), 0, 0, 0, ram_have, tuple(notes))
 
+    if spec.gguf_transformer is not None:
+        return _assess_gguf(spec, hw, device, act, notes)
+
     if spec.kind in ("speech", "transcribe"):  # small models run on the processor, big ones on the GPU
         return _assess_speech(spec, hw, device, dtype, weights, act, notes)
 
@@ -251,6 +254,36 @@ def assess(
     if gpu.vram_free_gb + 1.0 < need_vram and need_vram <= vram:
         notes.append(("vram_busy", {"free": gpu.vram_free_gb}))
     return Fit(verdict, plan, need_vram, vram, need_ram, ram_have, tuple(notes))
+
+
+def _assess_gguf(spec: ModelSpec, hw: Hardware, device: str, act: float,
+                 notes: list[tuple[str, dict[str, Any]]]) -> Fit:
+    variant = spec.gguf_transformer
+    assert variant is not None
+    gpu = hw.gpu
+    if (device != "cuda" or gpu is None or gpu.vendor != "nvidia"
+            or (gpu.cuda_capability is not None and gpu.cuda_capability < (8, 0))):
+        notes.append(("gguf_cuda", {}))
+        return Fit(NO, Plan(), notes=tuple(notes))
+
+    vram = gpu.vram_total_gb
+    # Diffusers moves entire components one at a time. Quantization of T5 is a separate GPU stage.
+    peak = max(variant.encoder_load_gb, max(spec.memory.get("transformer", 0.0),
+                                           spec.memory.get("vae", 0.0)) + act + 0.25)
+    ram = spec.weights_gb + 3.0  # compressed resident weights and CPU loading/decoding buffers
+    plan = Plan("cuda", "offload", "bf16", (), True)
+    verdict = GOOD
+    if peak > vram - (0.5 if vram <= 6.5 else 0.8):
+        notes.append(("vram", {"need": peak, "have": vram}))
+        verdict = NO
+    if ram > hw.ram_total_gb * 0.85:
+        notes.append(("ram", {"need": ram, "have": hw.ram_total_gb}))
+        verdict = NO
+    if verdict != NO:
+        notes.append(("gguf_offload", {}))
+        if gpu.vram_free_gb < peak:
+            notes.append(("vram_busy", {"free": gpu.vram_free_gb}))
+    return Fit(verdict, plan, peak, vram, ram, hw.ram_total_gb, tuple(notes))
 
 
 def _assess_speech(

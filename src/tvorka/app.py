@@ -18,6 +18,7 @@ log = logging.getLogger(__name__)
 
 def build_pages(services: object, toasts: object) -> list:
     from tvorka.gui.pages.chat import ChatPage
+    from tvorka.gui.pages.code import CodePage
     from tvorka.gui.pages.gallery import GalleryPage
     from tvorka.gui.pages.image import ImagePage
     from tvorka.gui.pages.models import ModelsPage
@@ -33,6 +34,7 @@ def build_pages(services: object, toasts: object) -> list:
     pages.append(ModelsPage(services, toasts))
     pages.append(GalleryPage(services, toasts))
     pages.append(SettingsPage(services, toasts))
+    pages.append(CodePage(services, toasts))
     pages.append(WelcomePage(services, toasts))  # not in the side bar
     return pages
 

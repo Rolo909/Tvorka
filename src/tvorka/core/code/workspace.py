@@ -7,14 +7,17 @@ import os
 import re
 import stat
 import tempfile
+from collections.abc import Callable, Iterator
 from dataclasses import dataclass
 from fnmatch import fnmatch
 from pathlib import Path, PurePosixPath, PureWindowsPath
 
+import regex
+
 MAX_FILE_BYTES = 1024**2
 MAX_READ_LINES = 400
 SKIP_DIRS = {".git", "node_modules", ".venv", "venv", "__pycache__", "dist", "build", ".idea",
-             ".mypy_cache", ".pytest_cache"}
+             ".mypy_cache", ".pytest_cache", ".ruff_cache"}
 WINDOWS_DEVICE = re.compile(r"(?:con|prn|aux|nul|com[1-9¹²³]|lpt[1-9¹²³]|conin\$|conout\$)(?:\.|$)", re.I)
 
 
@@ -68,7 +71,9 @@ class Workspace:
         current = self.root
         for part in path.parts:
             key = part.casefold()
-            if (part == ".." or key in {".git", ".env"} or key.startswith(".env.")
+            if (part == ".." or key == ".git" or key.startswith(".env")
+                    or key.endswith((".pem", ".key", ".pfx", ".p12"))
+                    or key in {".ssh", "id_rsa", "id_ed25519", "id_ecdsa"}
                     or part.endswith((" ", ".")) or WINDOWS_DEVICE.match(part)
                     or any(char in part for char in '<>:"|?*\x00')):
                 raise WorkspaceError("outside", rel)
@@ -85,21 +90,25 @@ class Workspace:
             raise WorkspaceError("outside", rel)
         return resolved
 
-    def tree(self, max_entries: int = 400) -> list[str]:
-        ignore = self.root / ".gitignore"
+    def files(self, folder: str = "") -> Iterator[str]:
+        base = self.root if folder in {"", ".", "./", ".\\"} else self.resolve(folder)
+        if not base.is_dir():
+            raise WorkspaceError("not_found", folder)
         patterns = []
-        if ignore.is_file() and not ignore.is_symlink():
-            with ignore.open(encoding="utf-8", errors="replace") as file:
-                patterns = [p.strip(" /") for p in file.read(MAX_FILE_BYTES).splitlines()
-                            if p.strip() and not p.lstrip().startswith(("#", "!"))]
+        try:
+            ignore = self.resolve(".gitignore")
+            if ignore.is_file():
+                with ignore.open(encoding="utf-8", errors="replace") as file:
+                    patterns = [p.strip(" /") for p in file.read(MAX_FILE_BYTES).splitlines()
+                                if p.strip() and not p.lstrip().startswith(("#", "!"))]
+        except (FileNotFoundError, WorkspaceError):
+            pass
 
         def hidden(rel: str, name: str) -> bool:
             return any(fnmatch(rel, pattern) or fnmatch(name, pattern) for pattern in patterns)
 
-        paths = []
-        total = 0
-        for folder, dirs, files in os.walk(self.root):
-            parent = Path(folder)
+        for directory, dirs, files in os.walk(base):
+            parent = Path(directory)
             dirs[:] = [name for name in sorted(dirs) if name.casefold() not in SKIP_DIRS
                        and not hidden((parent / name).relative_to(self.root).as_posix(), name)
                        and self._listed(parent / name)]
@@ -107,13 +116,54 @@ class Workspace:
                 child = parent / name
                 rel = child.relative_to(self.root).as_posix()
                 if not hidden(rel, name) and self._listed(child):
-                    total += 1
-                    if len(paths) < max_entries:
-                        paths.append(rel)
+                    yield rel
+
+    def tree(self, max_entries: int = 400, folder: str = "",
+             check: Callable[[], None] = lambda: None) -> list[str]:
+        paths = []
+        total = 0
+        for rel in self.files(folder):
+            check()
+            total += 1
+            if len(paths) < max_entries:
+                paths.append(rel)
         paths.sort()
         if total > len(paths):
             paths.append(f"… и ещё {total - len(paths)} файлов")
         return paths
+
+    def search(self, pattern: str, glob: str = "", max_hits: int = 100,
+               check: Callable[[], None] = lambda: None) -> list[tuple[str, int, str]]:
+        try:
+            expression = regex.compile(pattern, regex.MULTILINE)
+        except regex.error as exc:
+            raise WorkspaceError("invalid_pattern", str(exc)) from exc
+        hits = []
+        if max_hits <= 0:
+            return hits
+        for rel in self.files():
+            check()
+            if glob and not (fnmatch(rel, glob) or fnmatch(Path(rel).name, glob)):
+                continue
+            try:
+                source = self.propose_delete(rel).before or ""
+            except (WorkspaceError, OSError):
+                continue
+            try:
+                last_line = -1
+                for match in expression.finditer(source, timeout=0.2):
+                    start = source.rfind("\n", 0, match.start()) + 1
+                    if start == last_line:
+                        continue
+                    last_line = start
+                    end = source.find("\n", start)
+                    end = min(end, start + 200) if end >= 0 else start + 200
+                    hits.append((rel, source.count("\n", 0, start) + 1, source[start:end]))
+                    if len(hits) >= max_hits:
+                        return hits
+            except TimeoutError as exc:
+                raise WorkspaceError("search_timeout", rel) from exc
+        return hits
 
     def _listed(self, path: Path) -> bool:
         try:

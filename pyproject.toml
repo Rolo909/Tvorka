@@ -31,6 +31,7 @@ dependencies = [
     "protobuf>=4.25",
     "peft>=0.13",
     "scipy>=1.11",
+    "regex>=2024.11.6",
 ]
 
 [project.optional-dependencies]
@@ -51,7 +52,7 @@ docs = [
 # AMD (ROCm) and Intel (XPU) are wired up for Windows only. AMD publishes Windows wheels for
 # Python 3.10-3.13 only, one index per GPU family.
 cpu = ["torch>=2.5"]
-cu130 = ["torch>=2.5"]
+cu130 = ["torch>=2.5", "gguf>=0.19", "bitsandbytes>=0.50.2"]
 xpu = ["torch>=2.5", "triton-xpu; sys_platform == 'win32'"]
 # Radeon RX 6000, Radeon 680M/660M
 rocm-gfx103x = [
@@ -211,7 +212,7 @@ explicit = true
 [tool.hatch.build.targets.wheel]
 packages = ["src/tvorka"]
 # Bundled data that is not Python code.
-artifacts = ["src/tvorka/data/*.yaml", "src/tvorka/data/*.json", "src/tvorka/assets/**"]
+artifacts = ["src/tvorka/data/*.yaml", "src/tvorka/data/*.json", "src/tvorka/data/code_templates/**", "src/tvorka/assets/**"]
 
 [tool.ruff]
 target-version = "py311"

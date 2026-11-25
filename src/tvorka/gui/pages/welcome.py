@@ -64,12 +64,16 @@ def recommend(specs: list[ModelSpec], fit: Callable[[ModelSpec], Fit | None],
         for spec in specs:
             if spec.kind != kind or spec.source == "online" or spec.gated:
                 continue
+            present = installed(spec)
+            # Let the user choose composite downloads from Models on the first run.
+            if spec.gguf_transformer is not None and not present:
+                continue
             result = fit(spec)
             if result is not None and not result.ok:
                 continue
             rank = RANK.get(result.verdict, 5) if result is not None else 5
             foreign = kind == "speech" and bool(spec.languages) and lang not in spec.languages
-            candidates.append((foreign, rank, not installed(spec), spec.download_gb, spec, result))
+            candidates.append((foreign, rank, not present, spec.download_gb, spec, result))
         if candidates:
             *_order, missing, _size, spec, result = min(candidates, key=lambda c: c[:4])
             out[kind] = Recommendation(spec, result, not missing)
