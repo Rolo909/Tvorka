@@ -6,6 +6,7 @@ import json
 import logging
 import re
 import shutil
+from dataclasses import asdict
 from pathlib import Path
 from typing import Any
 
@@ -71,6 +72,9 @@ class ModelStore:
         if spec.source == "local":
             return bool(spec.path) and Path(spec.path).exists()
         location = self.location(spec)
+        if spec.gguf_transformer is not None:
+            return (location is not None and (location / "model_index.json").is_file()
+                    and self.transformer_path(spec) is not None)
         return location is not None and location.exists()
 
     def location(self, spec: ModelSpec) -> Path | None:
@@ -81,6 +85,10 @@ class ModelStore:
         if not manifest:
             return None
         path = Path(str(manifest.get("path", "")))
+        if spec.gguf_transformer is not None and (
+            not path.is_absolute() or not path.resolve().is_relative_to(self.files_dir(spec).resolve())
+        ):
+            return None
         return path if str(path) not in ("", ".") else None
 
     def variant(self, spec: ModelSpec) -> str | None:
@@ -92,15 +100,28 @@ class ModelStore:
         manifest = self.manifest(spec) or {}
         return manifest.get("variant") or None
 
+    def transformer_path(self, spec: ModelSpec) -> Path | None:
+        """A downloaded GGUF with the exact name from this model variant's catalog entry."""
+        variant = spec.gguf_transformer
+        manifest = self.manifest(spec) or {}
+        if (variant is None or manifest.get("transformer_repo") != variant.repo
+                or not isinstance(manifest.get("transformer_path"), str)):
+            return None
+        path = Path(manifest["transformer_path"])
+        if (path.name == variant.file and path.is_absolute() and path.is_file()
+                and path.resolve().is_relative_to(self.files_dir(spec).resolve())):
+            return path
+        return None
+
     def size_bytes(self, spec: ModelSpec) -> int:
         manifest = self.manifest(spec) or {}
         return int(manifest.get("bytes") or 0)
 
     def delete(self, spec: ModelSpec) -> None:
         """Remove downloaded weights. Local (user-owned) folders are never touched."""
-        if spec.source == "hf":
+        if spec.source == "hf" and spec.gguf_transformer is None:
             shutil.rmtree(self.hub_repo_dir(spec), ignore_errors=True)
-        elif spec.source == "url":
+        elif spec.source == "url" or (spec.source == "hf" and spec.gguf_transformer is not None):
             shutil.rmtree(self.files_dir(spec), ignore_errors=True)
         self.manifest_path(spec).unlink(missing_ok=True)
 
@@ -138,7 +159,7 @@ class ModelStore:
 
         ``only`` limits a Hugging Face download to these files (one quantization of a GGUF repo).
         """
-        return {
+        task = {
             "id": spec.id,
             "source": spec.source,
             "repo": spec.repo_id,
@@ -149,3 +170,6 @@ class ModelStore:
             "manifest": str(self.manifest_path(spec)),
             "prefer_half": spec.dtype != "fp32",
         }
+        if spec.gguf_transformer is not None:
+            task["gguf_transformer"] = asdict(spec.gguf_transformer)
+        return task

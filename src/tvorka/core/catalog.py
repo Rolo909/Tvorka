@@ -23,6 +23,35 @@ KINDS = ("image", "video", "speech", "chat", "transcribe")
 ENGINES: set[str] = {"diffusers", "silero", "transformers_tts", "edge", "llama", "whisper"}
 # Direct-URL weights are executable (torch.package), so only these hosts are accepted.
 TRUSTED_URL_HOSTS = {"models.silero.ai"}
+_HUB_REPO = re.compile(r"[A-Za-z0-9][\w.-]*/[A-Za-z0-9][\w.-]*", re.ASCII)
+_GGUF_FILE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]*\.gguf", re.IGNORECASE)
+
+
+def _valid_hub_repo(repo: str) -> bool:
+    return bool(_HUB_REPO.fullmatch(repo)) and not any(char in repo for char in ("--", ".."))
+
+
+@dataclass(frozen=True)
+class GgufTransformer:
+    """A GGUF denoiser and the matching 4-bit text encoder in a Diffusers pipeline."""
+
+    repo: str
+    file: str
+    family: str
+    encoder_load_gb: float = 6.0  # temporary VRAM peak while converting the original encoder to NF4
+    base_revision: str = ""  # some pipelines publish smaller encoder shards in a specific revision
+
+    def __post_init__(self) -> None:
+        if not _valid_hub_repo(self.repo) or not _GGUF_FILE.fullmatch(self.file):
+            raise ValueError("invalid GGUF repository or filename")
+        if self.family not in ("flux", "wan") or not 0 < self.encoder_load_gb <= 32:
+            raise ValueError("invalid GGUF pipeline or encoder memory")
+        if self.base_revision and not re.fullmatch(r"[a-f0-9]{40}", self.base_revision):
+            raise ValueError("invalid GGUF base revision")
+
+    @property
+    def encoder(self) -> str:
+        return "text_encoder_2" if self.family == "flux" else "text_encoder"
 
 
 @dataclass
@@ -74,6 +103,19 @@ class ModelSpec:
     expert_share: float = 0.0  # fraction of the weights in routed experts (what may stay in RAM)
     gated: bool = False
     origin: str = "builtin"  # builtin | remote | user | hub
+    gguf_transformer: GgufTransformer | None = None
+
+    def __post_init__(self) -> None:
+        variant = self.gguf_transformer
+        if variant is None:
+            return
+        kind = "image" if variant.family == "flux" else "video"
+        recipe_source_ok = _valid_hub_repo(self.id) and _valid_hub_repo(self.repo_id)
+        if (self.kind != kind or self.engine != "diffusers" or self.source != "hf"
+                or not recipe_source_ok or self.repo_id == variant.repo):
+            raise ValueError(f"incompatible base repository for {self.id}")
+        if any(self.memory.get(component, 0) <= 0 for component in ("transformer", "vae", variant.encoder)):
+            raise ValueError(f"missing GGUF memory budget for {self.id}")
 
     @property
     def repo_id(self) -> str:
@@ -101,6 +143,8 @@ class ModelSpec:
         clean = {k: v for k, v in data.items() if k in known}
         if isinstance(clean.get("summary"), str):
             clean["summary"] = {"en": clean["summary"]}
+        if (gguf := clean.get("gguf_transformer")) is not None:
+            clean["gguf_transformer"] = GgufTransformer(**gguf)
         spec = cls(**clean)
         spec.origin = origin
         if spec.kind not in KINDS or spec.engine not in ENGINES:

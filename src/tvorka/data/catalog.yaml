@@ -157,6 +157,27 @@ models:
     reference: [img2img]
     gated: true
 
+  - id: tvorka/flux1-schnell-gguf
+    name: FLUX.1 schnell GGUF · Q3_K_S
+    kind: image
+    repo: black-forest-labs/FLUX.1-schnell
+    author: Black Forest Labs / city96
+    license: Apache 2.0
+    summary:
+      ru: Генерация за 4 шага с GGUF и 4-битным T5. Нужны совместимая NVIDIA и доступ к базовой модели в Hugging Face.
+      en: Four-step generation with GGUF and 4-bit T5. Needs a compatible NVIDIA GPU and Hugging Face access to the base model.
+    tags: [gguf, text-to-image]
+    download_gb: 14.2
+    memory: {transformer: 4.86, text_encoder_2: 2.8, text_encoder: 0.24, vae: 0.16}
+    act_gb: 1.5
+    dtype: bf16
+    native: [768, 768]
+    max_side: 1024
+    multiple: 16
+    defaults: {steps: 4, guidance: 0.0, negative: false, max_steps: 12, max_sequence_length: 256}
+    gated: true
+    gguf_transformer: {repo: city96/FLUX.1-schnell-gguf, file: flux1-schnell-Q3_K_S.gguf, family: flux}
+
   # ------------------------------------------------------------- video
   - id: THUDM/CogVideoX-2b
     name: CogVideoX 2B
@@ -195,6 +216,32 @@ models:
     multiple: 16
     frame_rule: 4
     defaults: {steps: 30, guidance: 5.0, negative: true, frames: 81, fps: 16, max_frames: 121}
+
+  - id: tvorka/wan21-t2v-13b-gguf
+    name: Wan 2.1 T2V 1.3B GGUF · Q4_K_S
+    kind: video
+    repo: Wan-AI/Wan2.1-T2V-1.3B-Diffusers
+    author: Alibaba Wan / off-grid-ai
+    license: Apache 2.0
+    summary:
+      ru: Видео из текста в 480p с GGUF и 4-битным UMT5. Требуется совместимая видеокарта NVIDIA.
+      en: Text-to-video at 480p with GGUF and 4-bit UMT5. Requires a compatible NVIDIA GPU.
+    tags: [gguf, text-to-video, 480p]
+    download_gb: 13.5
+    memory: {transformer: 0.76, text_encoder: 3.2, vae: 0.5}
+    act_gb: 3.5
+    dtype: bf16
+    native: [832, 480]
+    max_side: 832
+    multiple: 16
+    frame_rule: 4
+    defaults: {steps: 30, guidance: 5.0, negative: true, frames: 81, fps: 16, max_frames: 121, max_sequence_length: 256}
+    gguf_transformer:
+      repo: off-grid-ai/Wan2.1-T2V-1.3B-GGUF
+      file: Wan2.1-T2V-1.3B-Q4_K_S.gguf
+      family: wan
+      encoder_load_gb: 6.4
+      base_revision: dd9313515fdad8a9fcef162db68309090805ed30
 
   - id: Lightricks/LTX-Video
     name: LTX-Video 2B
@@ -473,7 +520,7 @@ models:
     summary:
       ru: Универсальный помощник для 8 ГБ видеопамяти — тексты, код, анализ картинок и документов.
       en: An all-round assistant for 8 GB of VRAM — writing, code, images and documents.
-    tags: [vision]
+    tags: [vision, code]
     download_gb: 6.2
     quants:
       - {name: Q3_K_M, gb: 4.35, files: [Qwen3.5-9B-Q3_K_M.gguf]}
@@ -498,7 +545,7 @@ models:
     summary:
       ru: Сильная модель Google — грамотный русский, живые тексты, понимает картинки. Лучше всего с 10–12 ГБ видеопамяти.
       en: A strong Google model — fluent writing in many languages, understands images. Best with 10–12 GB of VRAM.
-    tags: [vision]
+    tags: [vision, code]
     download_gb: 7.2
     quants:
       - {name: Q3_K_M, gb: 5.3, files: [gemma-4-12b-it-Q3_K_M.gguf]}
@@ -573,6 +620,31 @@ models:
     expert_share: 0.92
     kv_gb_per_1k: 0.0195
     capabilities: [vision, tools, reasoning]
+
+  - id: unsloth/Qwen3-Coder-30B-A3B-Instruct-GGUF
+    name: Qwen3 Coder 30B A3B
+    kind: chat
+    engine: llama
+    author: Qwen
+    license: Apache-2.0
+    summary:
+      ru: Модель для кода с вызовом инструментов. Часть весов можно разместить в оперативной памяти.
+      en: Coding model with tool calling. Some of its weights can stay in system memory.
+    tags: [code, moe]
+    download_gb: 16.49
+    quants:
+      - {name: UD-Q2_K_XL, gb: 10.99, files: [Qwen3-Coder-30B-A3B-Instruct-UD-Q2_K_XL.gguf]}
+      - {name: UD-Q3_K_XL, gb: 12.85, files: [Qwen3-Coder-30B-A3B-Instruct-UD-Q3_K_XL.gguf]}
+      - {name: UD-Q4_K_XL, gb: 16.49, files: [Qwen3-Coder-30B-A3B-Instruct-UD-Q4_K_XL.gguf]}
+      - {name: Q4_K_M, gb: 17.32, files: [Qwen3-Coder-30B-A3B-Instruct-Q4_K_M.gguf]}
+      - {name: Q5_K_M, gb: 20.21, files: [Qwen3-Coder-30B-A3B-Instruct-Q5_K_M.gguf]}
+    context: 262144
+    layers: 48
+    kv_gb_per_1k: 0.09375
+    experts: 128
+    experts_used: 8
+    expert_share: 0.94
+    capabilities: [tools]
 
   # ------------------------------------------------------------ speech recognition (Whisper, transformers)
   # Used by the microphone button and to understand sound in chat attachments.

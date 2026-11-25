@@ -39,6 +39,9 @@ def engine_error(code: str, detail: str = "") -> str:
         "does_not_fit": tr("This computer cannot run the model. The reason is shown under the model name."),
         "out_of_memory": tr("Not enough video memory. Lower the resolution or choose the "
                             "“Low memory” mode in Settings."),
+        "gguf_dependencies": tr("GGUF image and video models need the CUDA dependencies of Tvorka. "
+                                "Reinstall the CUDA build of the app."),
+        "gguf_cuda": tr("This GGUF model needs an NVIDIA graphics card with native BF16 and a CUDA build."),
         "no_sound": tr("There is no sound in this file."),
         "unreadable": tr("The sound could not be read. The file may be damaged."),
         "failed": _unknown(),
@@ -119,6 +122,9 @@ def advisor_note(code: str, params: dict[str, Any]) -> str:
         p["parts"] = ", ".join(names.get(part.strip(), part.strip()) for part in str(p["parts"]).split(","))
     texts = {
         "online": tr("Works over the internet: the text is sent to Microsoft."),
+        "gguf_cuda": tr("This GGUF model needs an NVIDIA graphics card with native BF16 and a CUDA build."),
+        "gguf_offload": tr("The GGUF transformer and 4-bit text encoder are moved "
+                           "to the graphics card one at a time."),
         "torch_cpu_build": tr("PyTorch without graphics card support is installed. "
                               "Install the GPU build in Settings → This computer."),
         "gpu_unsupported": tr("{gpu} is not supported yet; the model will run on the processor."),

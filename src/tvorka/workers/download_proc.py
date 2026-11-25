@@ -116,7 +116,8 @@ def _fetch(url: str, partial: Path, size: int) -> None:
         raise ConnectionError(f"connection closed at {have} of {size} bytes")
 
 
-def _prefetch_large_files(repo: str, plan: Any, repo_dir: Path, token: str | None) -> None:
+def _prefetch_large_files(repo: str, plan: Any, repo_dir: Path, token: str | None,
+                          revision: str | None = None) -> None:
     """Resumably put the large files of ``plan`` into the blob store."""
     from huggingface_hub import get_hf_file_metadata, hf_hub_url
 
@@ -125,7 +126,8 @@ def _prefetch_large_files(repo: str, plan: Any, repo_dir: Path, token: str | Non
     for name in plan.files:
         if plan.sizes.get(name, 0) < RESUME_FROM:
             continue
-        meta = get_hf_file_metadata(hf_hub_url(repo, name), token=token)
+        url = hf_hub_url(repo, name, revision=revision) if revision else hf_hub_url(repo, name)
+        meta = get_hf_file_metadata(url, token=token)
         if not meta.etag or not meta.location:
             continue
         blob = blobs / meta.etag
@@ -148,8 +150,6 @@ def _drop_duplicate_blobs(repo_dir: Path) -> None:
 
 
 def _download_hf(task: dict[str, Any]) -> dict[str, Any]:
-    from huggingface_hub import snapshot_download
-
     from tvorka.core.hub import plan_files, plan_named, repo_siblings
 
     token = os.environ.get("HF_TOKEN") or None
@@ -160,7 +160,8 @@ def _download_hf(task: dict[str, Any]) -> dict[str, Any]:
         plan = plan_files(siblings, prefer_half=bool(task.get("prefer_half", True)))
     if not plan.files:
         raise RuntimeError("repository has no downloadable model files")
-    repo_dir = Path(task["hub_dir"]) / f"models--{task['repo'].replace('/', '--')}"
+    cache = Path(task["hub_dir"])
+    repo_dir = _repo_dir(cache, task["repo"])
     _drop_stale_temp_files(repo_dir)
     present = _present_bytes(repo_dir, plan)
     check_disk(repo_dir, plan.total_bytes - present)
@@ -171,16 +172,74 @@ def _download_hf(task: dict[str, Any]) -> dict[str, Any]:
                                daemon=True)
     watcher.start()
     try:
-        _prefetch_large_files(task["repo"], plan, repo_dir, token)
-        path = snapshot_download(
-            task["repo"], cache_dir=task["hub_dir"], allow_patterns=plan.files, token=token,
-            max_workers=4,
-        )
-        _drop_duplicate_blobs(repo_dir)
+        path = _cache_snapshot(task["repo"], plan, cache, token)
     finally:
         stop.set()
     return {"path": path, "variant": plan.variant, "bytes": plan.total_bytes,
             "files": plan.files, "components": plan.components}
+
+
+def _repo_dir(cache: Path, repo: str) -> Path:
+    return cache / f"models--{repo.replace('/', '--')}"
+
+
+def _cache_snapshot(repo: str, plan: Any, cache: Path, token: str | None,
+                    revision: str | None = None) -> str:
+    from huggingface_hub import snapshot_download
+
+    repo_dir = _repo_dir(cache, repo)
+    if revision is not None:
+        _prefetch_large_files(repo, plan, repo_dir, token, revision)
+    else:
+        _prefetch_large_files(repo, plan, repo_dir, token)
+    options = {"revision": revision} if revision else {}
+    path = snapshot_download(repo, cache_dir=str(cache), allow_patterns=plan.files, token=token,
+                             max_workers=4, **options)
+    _drop_duplicate_blobs(repo_dir)
+    return path
+
+
+def _download_gguf(task: dict[str, Any]) -> dict[str, Any]:
+    from tvorka.core.catalog import GgufTransformer
+    from tvorka.core.hub import plan_gguf_base, plan_named, repo_siblings
+
+    recipe = GgufTransformer(**task["gguf_transformer"])
+    base_repo = task["repo"]
+    token = os.environ.get("HF_TOKEN") or None
+    base_info, base_files = repo_siblings(base_repo, token, recipe.base_revision)
+    gguf_info, gguf_files = repo_siblings(recipe.repo, token)
+    base_plan = plan_gguf_base(base_files, recipe.encoder)
+    gguf_plan = plan_named(gguf_files, [recipe.file])
+    # Access to a gated base must succeed before the separate denoiser is downloaded.
+    parts = ((base_repo, base_plan, base_info.sha), (recipe.repo, gguf_plan, gguf_info.sha))
+
+    # Isolate this recipe from the full precision model and from other GGUF variants.
+    cache = Path(task["files_dir"]) / "hub"
+    total = base_plan.total_bytes + gguf_plan.total_bytes
+    present = 0
+    for repo, plan, _revision in parts:
+        repo_dir = _repo_dir(cache, repo)
+        _drop_stale_temp_files(repo_dir)
+        present += _present_bytes(repo_dir, plan)
+    # Sites without Windows symlink support may briefly hold both blobs and their snapshot copies.
+    headroom = max(base_plan.total_bytes, gguf_plan.total_bytes) if os.name == "nt" else 0
+    check_disk(cache, total - present + headroom)
+    emit("plan", total=total, done=present, files=len(base_plan.files) + len(gguf_plan.files),
+         variant=base_plan.variant)
+    stop = threading.Event()
+    watcher = threading.Thread(target=_poll, args=(cache, total, present, stop), daemon=True)
+    watcher.start()
+    try:
+        base, weights = (_cache_snapshot(repo, plan, cache, token, revision)
+                         for repo, plan, revision in parts)
+    finally:
+        stop.set()
+    transformer = Path(weights) / recipe.file
+    if not transformer.is_file() or not all((Path(base) / file).is_file() for file in base_plan.files):
+        raise DownloadError("not_found", "The GGUF or base component files are missing")
+    return {"path": base, "transformer_path": str(transformer), "transformer_repo": recipe.repo,
+            "variant": base_plan.variant, "bytes": total, "files": base_plan.files,
+            "components": {**base_plan.components, "transformer": gguf_plan.total_bytes}}
 
 
 def _size(path: Path) -> int:
@@ -293,7 +352,12 @@ def main(task_file: str) -> int:
         # at the end, so progress would sit at 0 for minutes. Plain HTTP writes as it goes
         # (same speed in tests) and resumes partial files.
         os.environ.setdefault("HF_HUB_DISABLE_XET", "1")
-        result = _download_urls(task) if task["source"] == "url" else _download_hf(task)
+        if task.get("gguf_transformer"):
+            result = _download_gguf(task)
+        elif task["source"] == "url":
+            result = _download_urls(task)
+        else:
+            result = _download_hf(task)
         manifest = Path(task["manifest"])
         manifest.parent.mkdir(parents=True, exist_ok=True)
         manifest.write_text(

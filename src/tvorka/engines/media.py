@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import wave
+from collections.abc import Callable, Sequence
 from fractions import Fraction
 from itertools import pairwise
 from pathlib import Path
@@ -205,6 +206,53 @@ def read_video(path: Path) -> tuple[np.ndarray, float]:
     if not frames:
         raise ValueError(f"{path.name}: no frames")
     return np.stack(frames), fps
+
+
+STORYBOARD_FPS = 24
+
+
+def join_scenes(scenes: Sequence[tuple[Path, Path]], out: Path, width: int, height: int,
+                check: Callable[[], None]) -> float:
+    """Encode ordered clips and narration in one pass, keeping one scene in memory."""
+    import av
+
+    fps, rate = STORYBOARD_FPS, 48_000
+    samples_per_frame = rate // fps
+    frame_count = 0
+    with av.open(str(out), "w", options={"movflags": "+faststart"}) as container:
+        picture = container.add_stream("libx264", rate=fps, options={"crf": "18", "preset": "medium"})
+        picture.width, picture.height, picture.pix_fmt = width, height, "yuv420p"
+        sound = container.add_stream("aac", rate=rate)
+        sound.layout = "mono"
+        for video, audio in scenes:
+            check()
+            frames, source_fps = read_video(video)
+            if frames.shape[1:3] != (height, width):
+                frames = resize_frames(frames, width, height)
+            samples, _ = read_audio(audio, rate=rate)
+            clip_frames = max(1, round(len(frames) * fps / source_fps))
+            voice_frames = (samples.size + samples_per_frame - 1) // samples_per_frame
+            total = max(clip_frames, voice_frames)
+            samples = np.pad(samples, (0, total * samples_per_frame - samples.size))
+            for index in range(total):
+                check()
+                source = min(len(frames) - 1, int(min(index, clip_frames - 1) * source_fps / fps))
+                frame = av.VideoFrame.from_ndarray(frames[source], format="rgb24")
+                frame.pts, frame.time_base = frame_count, Fraction(1, fps)
+                for packet in picture.encode(frame):
+                    container.mux(packet)
+                start = index * samples_per_frame
+                chunk = av.AudioFrame.from_ndarray(samples[None, start:start + samples_per_frame],
+                                                   format="fltp", layout="mono")
+                chunk.sample_rate = rate
+                chunk.pts, chunk.time_base = frame_count * samples_per_frame, Fraction(1, rate)
+                for packet in sound.encode(chunk):
+                    container.mux(packet)
+                frame_count += 1
+        for stream in (picture, sound):
+            for packet in stream.encode():
+                container.mux(packet)
+    return frame_count / fps
 
 
 def mux_audio(video: Path, audio: Path, out: Path) -> float:

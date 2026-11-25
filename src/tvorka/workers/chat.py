@@ -34,7 +34,7 @@ from tvorka.core.chats import (
     tool_proposals,
 )
 from tvorka.core.llm import runtime
-from tvorka.core.llm.client import LlamaClient, LlmError, join_tool_calls
+from tvorka.core.llm.client import LlamaClient, LlmError, join_tool_calls, tool_message_calls
 from tvorka.core.memory import VideoMemory
 
 log = logging.getLogger(__name__)
@@ -232,6 +232,7 @@ class ChatWorker(QThread):
         stats = {key: usage[key] for key in STATS if key in usage}
         if calls:
             stats["tool_calls"] = join_tool_calls(calls)
+            stats["message_calls"] = tool_message_calls(calls)
         return stats
 
     def _title(self, request: _Request) -> None:

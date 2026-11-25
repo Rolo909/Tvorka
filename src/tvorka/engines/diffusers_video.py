@@ -49,7 +49,8 @@ class DiffusersVideoEngine(DiffusersEngine):
                     raise EngineError("reference_unsupported", spec.i2v_pipeline)
                 pipe = self.switch_class(cls)
             try:
-                image = media.fit_image(Image.open(reference), width, height)
+                with Image.open(reference) as source:
+                    image = media.fit_image(source, width, height)
             except OSError as exc:
                 raise EngineError("reference_unreadable", str(reference)) from exc
         elif takes_image and spec.requires_reference:
@@ -60,6 +61,7 @@ class DiffusersVideoEngine(DiffusersEngine):
             "prompt": job.prompt, "negative_prompt": negative, "image": image,
             "width": width, "height": height, "num_frames": frames,
             "num_inference_steps": steps, "guidance_scale": float(job.get("guidance", 5.0)),
+            "max_sequence_length": spec.default("max_sequence_length"),
             "generator": self.generator(seed), "output_type": "np",
         }, ctx, 0.0, 0.92)
 
@@ -72,9 +74,9 @@ class DiffusersVideoEngine(DiffusersEngine):
         array = media.resample_frames(array, model_fps, fps)
         path = output_file(ctx.settings.output_path(), "video", fmt)
         media.write_video(array, fps, path)
-        thumb = self._poster(array, path)
+        thumb = "" if job.get("preview") else str(self._poster(array, path))
         ctx.progress(1.0, "save")
-        return [Result.make(job, path, spec.name, time.perf_counter() - started, str(thumb),
+        return [Result.make(job, path, spec.name, time.perf_counter() - started, thumb,
                             seed=seed, width=int(array.shape[2]), height=int(array.shape[1]),
                             frames=int(array.shape[0]), fps=fps, generated=list(generated),
                             duration=round(array.shape[0] / fps, 2))]

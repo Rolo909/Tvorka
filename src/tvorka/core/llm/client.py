@@ -11,6 +11,7 @@ import http.client
 import json
 import socket
 import threading
+import uuid
 from collections.abc import Iterator
 from dataclasses import dataclass, field
 from typing import Any
@@ -131,7 +132,8 @@ def _delta(chunk: dict[str, Any]) -> Delta | None:
     calls = []
     for call in delta.get("tool_calls") or []:
         function = call.get("function") or {}
-        calls.append({"index": int(call.get("index", 0)), "name": str(function.get("name") or ""),
+        calls.append({"index": int(call.get("index", 0)), "id": str(call.get("id") or ""),
+                      "name": str(function.get("name") or ""),
                       "arguments": str(function.get("arguments") or "")})
     return Delta(str(delta.get("content") or ""), str(delta.get("reasoning_content") or ""),
                  str(choice.get("finish_reason") or ""), usage, calls)
@@ -139,19 +141,28 @@ def _delta(chunk: dict[str, Any]) -> Delta | None:
 
 def join_tool_calls(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Streamed tool call pieces glued into ``[{"name", "arguments": dict | None}]`` (None: not JSON)."""
-    calls: dict[int, dict[str, str]] = {}
-    for piece in fragments:
-        call = calls.setdefault(piece["index"], {"name": "", "arguments": ""})
-        call["name"] += piece["name"]
-        call["arguments"] += piece["arguments"]
     out = []
-    for _index, call in sorted(calls.items()):
+    for raw in tool_message_calls(fragments):
+        call = raw["function"]
         try:
             arguments = json.loads(call["arguments"] or "{}")
         except ValueError:
             arguments = None
         out.append({"name": call["name"], "arguments": arguments if isinstance(arguments, dict) else None})
     return out
+
+
+def tool_message_calls(fragments: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reassemble calls in the format accepted in the next assistant message."""
+    calls: dict[int, dict[str, str]] = {}
+    for piece in fragments:
+        call = calls.setdefault(piece["index"], {"id": "", "name": "", "arguments": ""})
+        call["id"] = call["id"] or piece.get("id", "")
+        call["name"] += piece["name"]
+        call["arguments"] += piece["arguments"]
+    return [{"id": call["id"] or f"call_{uuid.uuid4().hex[:12]}", "type": "function",
+             "function": {"name": call["name"], "arguments": call["arguments"] or "{}"}}
+            for _index, call in sorted(calls.items())]
 
 
 def _http_error(status: int, body: bytes) -> LlmError:

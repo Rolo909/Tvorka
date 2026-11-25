@@ -16,6 +16,7 @@ from tvorka.engines.base import (
     EngineError,
     device_available,
     free_memory,
+    is_oom,
     quiet_libraries,
 )
 
@@ -98,13 +99,25 @@ class DiffusersEngine(Engine):
         dtype = torch_dtype(self.plan.dtype)
         ctx.progress(0.1, "load")
         try:
-            if path.is_file() and path.suffix.lower() in SINGLE_FILE_EXT:
+            if self.spec.gguf_transformer is not None:
+                from tvorka.engines.diffusers_gguf import load_gguf
+
+                weights = ctx.store.transformer_path(self.spec)
+                if weights is None:
+                    raise EngineError("not_installed", self.spec.name)
+                if self.plan.device != "cuda" or self.plan.mode != "offload":
+                    raise EngineError("gguf_cuda", self.spec.name)
+                self.pipe = load_gguf(diffusers, path, weights, self.spec.gguf_transformer,
+                                      dtype, ctx, ctx.store.variant(self.spec))
+            elif path.is_file() and path.suffix.lower() in SINGLE_FILE_EXT:
                 self.pipe = self._load_single_file(diffusers, path, dtype)
             else:
                 self.pipe = self._load_folder(diffusers, path, dtype, ctx.store.variant(self.spec))
-        except EngineError:
+        except (EngineError, Cancelled):
             raise
         except Exception as exc:
+            if self.spec.gguf_transformer is not None and is_oom(exc):
+                raise
             raise EngineError("load_failed", f"{exc.__class__.__name__}: {exc}") from exc
         ctx.check()
         self._base_cls = type(self.pipe)

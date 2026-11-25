@@ -94,9 +94,10 @@ class MessageView(QWidget):
     tool = Signal(str, int, int)  # create | edit | decline | show | open | send, message index, tool index
 
     def __init__(self, message: Message, index: int, model_name: str = "", last: bool = False,
-                 live: bool = False, folder: Path | None = None) -> None:
+                 live: bool = False, folder: Path | None = None, full_width: bool = False) -> None:
         super().__init__()
         self.index, self.role = index, message.role
+        self._full_width = full_width
         outer = QHBoxLayout(self)
         outer.setContentsMargins(0, 0, 0, 0)
         self.bubble = QFrame()
@@ -108,11 +109,9 @@ class MessageView(QWidget):
         else:
             box.setContentsMargins(2, 4, 2, 4)
         box.setSpacing(6)
-        if message.role == "user":
+        if message.role == "user" and not full_width:
             outer.addStretch(1)  # the user's messages sit on the right, as wide as their text
-            outer.addWidget(self.bubble)
-        else:
-            outer.addWidget(self.bubble)
+        outer.addWidget(self.bubble)
 
         self.reasoning = Disclosure(tr("Reasoning"))
         self.reasoning_text = label("", "faint", wrap=True)
@@ -151,6 +150,8 @@ class MessageView(QWidget):
             buttons.append(("edit", "edit", tr("Edit and send again")))
         else:
             buttons.append(("send", "link", tr("Send to… (draw it, make a video, read aloud)")))
+            if not live and "```" in message.content:
+                buttons.append(("code", "code", tr("Open in Code")))
             if message.content.strip() and not live:
                 buttons.append(("read", "voice", tr("Read answer aloud")))
             if last:
@@ -187,7 +188,7 @@ class MessageView(QWidget):
     def resizeEvent(self, event: QResizeEvent) -> None:
         """A user's message is as wide as its text, at most three quarters of the conversation."""
         super().resizeEvent(event)
-        if self.role != "user":
+        if self.role != "user" or self._full_width:
             return
         widest = int(self.width() * 0.75)
         metrics = QFontMetrics(self.body.font())

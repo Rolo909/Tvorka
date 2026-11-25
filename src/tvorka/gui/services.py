@@ -13,6 +13,7 @@ from tvorka.core import hardware, paths
 from tvorka.core.advisor import Fit, LlmPlan, assess, llm_gpu
 from tvorka.core.catalog import Catalog, ModelSpec
 from tvorka.core.chats import ChatStore
+from tvorka.core.code.sessions import SessionStore
 from tvorka.core.hardware import Hardware
 from tvorka.core.jobs import History
 from tvorka.core.llm import runtime
@@ -21,6 +22,7 @@ from tvorka.core.settings import Settings
 from tvorka.core.store import ModelStore
 from tvorka.engines.plugins import PluginInfo
 from tvorka.workers.chat import ChatSession, ChatWorker, Launch
+from tvorka.workers.code_agent import CodeWorker
 from tvorka.workers.downloads import DownloadManager, run_async
 from tvorka.workers.generation import GenerationWorker
 from tvorka.workers.stt import SttWorker
@@ -53,6 +55,8 @@ class Services(QObject):
         self.downloads = DownloadManager(settings, self.store, self)
         self.worker = GenerationWorker(settings, self.catalog, self.store, self.history)
         self.chat_worker = ChatWorker(paths.data_dir() / "logs" / "llama-server.log")
+        code_sessions = SessionStore(paths.data_dir() / "code" / "sessions")
+        self.code = CodeWorker(self.chat_worker, self.worker, code_sessions)
         self.chat = ChatSession(ChatStore(paths.data_dir() / "chats"), self.chat_worker)
         self.chat_speech_jobs: dict[int, tuple[str, dict]] = {}  # job id -> conversation id, request card
         for conv in self.chat.conversations:
@@ -161,7 +165,7 @@ class Services(QObject):
         return self.stt.submit(spec.id, location, device, audio)
 
     def busy(self) -> bool:
-        return (self.worker.current_job is not None or self.chat.busy
+        return (self.worker.current_job is not None or self.chat.busy or self.code.isRunning()
                 or bool(self.downloads.active_ids()))
 
     def shutdown(self, patience_s: float = 180.0) -> None:
@@ -173,16 +177,17 @@ class Services(QObject):
         """
         self.settings.save()
         self.downloads.cancel_all()
+        self.code.cancel()
         self.chat_worker.shutdown()  # stops the answer and the llama.cpp server
         self.stt.shutdown()
         self.worker.shutdown()
         self.chat_worker.wait(15_000)
         self.stt.wait(15_000)
         waited = 15.0
-        while self.worker.isRunning() and waited < patience_s:
-            self.worker.wait(1000)
+        while (self.worker.isRunning() or self.code.isRunning()) and waited < patience_s:
+            (self.worker if self.worker.isRunning() else self.code).wait(1000)
             waited += 1.0
-        if self.worker.isRunning():
-            log.warning("generation thread still busy after %.0f s; exiting anyway", waited)
+        if self.worker.isRunning() or self.code.isRunning():
+            log.warning("worker thread still busy after %.0f s; exiting anyway", waited)
             logging.shutdown()
             os._exit(0)

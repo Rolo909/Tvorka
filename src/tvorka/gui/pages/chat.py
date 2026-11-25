@@ -56,6 +56,7 @@ from tvorka.gui.widgets.feedback import ToastHost
 from tvorka.gui.widgets.fit import FitBanner
 from tvorka.gui.widgets.mic import MicButton
 from tvorka.gui.widgets.model_card import chat_download_files, chat_download_gb, size_text
+from tvorka.gui.widgets.storyboard import StoryboardDialog
 from tvorka.i18n import messages, tr
 from tvorka.workers.downloads import run_async
 
@@ -91,6 +92,7 @@ class ChatPage(Page):
         self._chips: list[AttachmentChip] = []
         self._reading = 0  # files still being read
         self._audio_chat = ""
+        self._storyboard: StoryboardDialog | None = None
         self.setAcceptDrops(True)
 
         layout = QHBoxLayout(self)
@@ -134,6 +136,9 @@ class ChatPage(Page):
         self.new_button.setCursor(Qt.CursorShape.PointingHandCursor)
         self.new_button.clicked.connect(self.new_chat)
         box.addWidget(self.new_button)
+        storyboard = QPushButton(tr("Video from an idea"))
+        storyboard.clicked.connect(self._open_storyboard)
+        box.addWidget(storyboard)
         self.search = QLineEdit()
         self.search.setPlaceholderText(tr("Search chats"))
         self.search.setClearButtonEnabled(True)
@@ -152,6 +157,18 @@ class ChatPage(Page):
         self.list_empty = label(tr("Your conversations will be listed here."), "faint", wrap=True)
         box.addWidget(self.list_empty)
         return panel
+
+    def _open_storyboard(self) -> None:
+        if self._storyboard is None:
+            parent = f"chat:{self._conv.id}" if self.session.get(self._conv.id) else ""
+            self._storyboard = StoryboardDialog(self, self.text.toPlainText(), parent)
+            self._storyboard.finished.connect(self._storyboard_closed)
+        self._storyboard.show()
+        self._storyboard.raise_()
+        self._storyboard.activateWindow()
+
+    def _storyboard_closed(self, _result: int) -> None:
+        self._storyboard = None
 
     def _build_main(self) -> QWidget:
         main = QWidget()
@@ -526,6 +543,8 @@ class ChatPage(Page):
         if name == "send":
             selection = self._views[index].body.selectedText().replace("\u2029", "\n").replace("\u2028", "\n")
             self.send_menu(self._answer_asset(selection.strip() or conv.messages[index].content))
+        elif name == "code":
+            self.send(self._answer_asset(conv.messages[index].content), "code", "code_blocks")
         elif name == "read":
             self._read_answer(index)
         elif name == "copy":
@@ -1066,6 +1085,8 @@ class ChatPage(Page):
         self._refresh_fit()
 
     def save_state(self) -> None:
+        if self._storyboard is not None:
+            self._storyboard.detach()
         self._remember()
 
     def _drafts(self) -> dict[str, str]:

@@ -29,6 +29,7 @@ class Task:
 
     messages: list[dict[str, Any]]
     max_tokens: int = 400
+    response_format: dict[str, Any] | None = None
 
 
 def prompt_style(spec: Any) -> str:

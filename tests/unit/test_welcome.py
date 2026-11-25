@@ -33,6 +33,14 @@ def test_rtx_3060_gets_light_models() -> None:
     assert not recs["video"].suggested  # slow on 8 GB: offered, not ticked
 
 
+def test_installed_gguf_can_be_recommended_without_a_new_download() -> None:
+    model_id = "tvorka/wan21-t2v-13b-gguf"
+
+    recs = run(machine(8.0), installed={model_id})
+
+    assert recs["video"].spec.id == model_id and recs["video"].installed
+
+
 def test_never_online_or_gated() -> None:
     for vram in (None, 4.0, 24.0):
         for rec in run(machine(vram, ram=64)).values():
