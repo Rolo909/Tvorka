@@ -21,15 +21,15 @@ jobs:
           enable-cache: true
 
       - name: Install (CPU PyTorch, no GPU on CI runners)
-        run: uv sync --frozen --extra cpu --extra online
+        run: uv sync --frozen --extra cpu --extra online --extra docs
 
       - name: Ruff
-        run: uv run --frozen ruff check src tests scripts
+        run: uv run --no-sync ruff check src tests scripts
 
       - name: Tests
         env:
           QT_QPA_PLATFORM: offscreen
-        run: uv run --frozen pytest -q
+        run: uv run --no-sync pytest -q
 
   release:
     name: Release archive
