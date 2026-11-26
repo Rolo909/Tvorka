@@ -12,6 +12,7 @@ import pytest
 os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 pytest.importorskip("pytestqt")
 
+from PySide6.QtCore import Qt
 from test_advisor import machine
 from test_chat_worker import stub_command
 
@@ -22,6 +23,7 @@ from tvorka.core.memory import VideoMemory
 from tvorka.core.settings import Settings
 from tvorka.core.store import ModelStore
 from tvorka.engines.base import Engine, register_engine
+from tvorka.workers import generation as generation_worker
 from tvorka.workers.chat import ChatWorker, Launch
 from tvorka.workers.generation import GenerationWorker
 
@@ -129,8 +131,9 @@ register_engine("test_gpu", FakeGpuEngine)
 
 
 @pytest.fixture
-def workers(tmp_path: Path, qtbot):
+def workers(tmp_path: Path, qtbot, monkeypatch):
     events.clear()
+    monkeypatch.setattr(generation_worker, "free_memory", lambda: None)
     settings = Settings(models_dir=str(tmp_path / "m"), output_dir=str(tmp_path / "o"))
     generation = GenerationWorker(settings, None, ModelStore(settings), History(tmp_path / "h.json"))
     chat = ChatWorker(tmp_path / "server.log", stub_command, ready_timeout_s=30)
@@ -138,7 +141,10 @@ def workers(tmp_path: Path, qtbot):
     generation.attach_memory(memory)
     chat.attach_memory(memory)
     generation.set_hardware(machine(8))
-    chat.model_changed.connect(lambda m: events.append(f"chat {m or '-'}"))
+    # Record the emission in the same timeline as the engine's synchronous load and unload.
+    chat.model_changed.connect(
+        lambda model: events.append(f"chat {model or '-'}"), Qt.ConnectionType.DirectConnection
+    )
     generation.start()
     chat.start()
     yield generation, chat, memory
